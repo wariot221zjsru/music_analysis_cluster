@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}登录 · 音乐分析和处理智能体{% endblock %}
+{% block content %}
+<div class="auth-card">
+  <h2>登录</h2>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit" class="btn btn-primary btn-block">登录</button>
+  </form>
+  <p class="auth-hint">还没有账号？<a href="/accounts/register/">注册</a></p>
+</div>
+{% endblock %}

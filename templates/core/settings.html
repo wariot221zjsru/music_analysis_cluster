@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+{% block title %}系统设置 · 音乐分析和处理智能体{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>系统设置 <span class="tag">仅管理员</span></h1>
+</div>
+
+<form method="post" class="card settings-card">
+  {% csrf_token %}
+  <h3>复调检测（计划书 4.5.2.1）</h3>
+  <div class="settings-grid">
+    <div>
+      <label class="field-label">复调判定阈值（0~1）</label>
+      <input type="number" step="0.01" min="0" max="1" name="polyphony_threshold"
+             class="input" value="{{ config.polyphony_threshold }}">
+      <p class="field-hint">同 Part 同时发声音数占比 ≥ 该值即判为复调。默认 0.30。</p>
+    </div>
+  </div>
+
+  <h3>主旋律交接检测（计划书 4.5.2.2）</h3>
+  <div class="settings-grid">
+    <div>
+      <label class="field-label">最少切换次数</label>
+      <input type="number" min="1" name="exchange_min_switches" class="input"
+             value="{{ config.exchange_min_switches }}">
+    </div>
+    <div>
+      <label class="field-label">动机相似度阈值（0~1）</label>
+      <input type="number" step="0.01" min="0" max="1" name="exchange_similarity_threshold"
+             class="input" value="{{ config.exchange_similarity_threshold }}">
+      <p class="field-hint">切换前后声部动机相似度 ≥ 该值才计入有效切换（fugato / 模仿）。</p>
+    </div>
+  </div>
+
+  <h3>分析窗口</h3>
+  <div class="settings-grid">
+    <div>
+      <label class="field-label">显著性时间窗（小节）</label>
+      <input type="number" min="1" max="32" name="analysis_window_bars" class="input"
+             value="{{ config.analysis_window_bars }}">
+    </div>
+    <div>
+      <label class="field-label">和弦聚合窗口</label>
+      <select name="chord_window" class="input">
+        <option value="measure" {% if config.chord_window == 'measure' %}selected{% endif %}>按小节</option>
+        <option value="beat" {% if config.chord_window == 'beat' %}selected{% endif %}>按拍</option>
+      </select>
+    </div>
+  </div>
+
+  <h3>dsh（DeepSeek Harness 命令行版）</h3>
+  <div class="settings-grid">
+    <div>
+      <label class="field-label">profile 名称</label>
+      <input type="text" name="dsh_profile" class="input" value="{{ config.dsh_profile }}">
+      <p class="field-hint">需在该 profile 安装 dsh-musictheory 插件。</p>
+    </div>
+    <div>
+      <label class="field-label">单次调用超时（秒）</label>
+      <input type="number" min="30" max="1800" name="dsh_timeout" class="input"
+             value="{{ config.dsh_timeout }}">
+    </div>
+    <div>
+      <label class="field-label">和弦单次 LLM 批量窗口数</label>
+      <input type="number" min="10" max="200" name="max_chord_windows_per_call" class="input"
+             value="{{ config.max_chord_windows_per_call }}">
+    </div>
+  </div>
+
+  <button type="submit" class="btn btn-primary">保存配置</button>
+</form>
+{% endblock %}

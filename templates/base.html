@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}音乐分析和处理智能体{% endblock %}</title>
+  {% load static %}
+  <link rel="stylesheet" href="{% static 'css/style.css' %}">
+</head>
+<body>
+<nav class="navbar">
+  <div class="nav-inner">
+    <a class="brand" href="/">🎼 音乐分析和处理智能体</a>
+    <div class="nav-links">
+      <a href="/">作品列表</a>
+      <a href="/upload/">上传作品</a>
+      {% if user.is_staff %}
+        <a href="/settings/" class="staff-link">系统设置</a>
+        <a href="/admin/" class="staff-link">后台管理</a>
+      {% endif %}
+      <span class="user-badge">
+        {{ user.username }}
+        <small>{% if user.is_staff %}管理员{% else %}普通用户{% endif %}</small>
+      </span>
+      <form method="post" action="/accounts/logout/" class="inline">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-ghost btn-sm">退出</button>
+      </form>
+    </div>
+  </div>
+</nav>
+
+<main class="container">
+  {% if messages %}
+    {% for message in messages %}
+      <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="footer">
+  分析因果链：节奏网格 → 节奏型 → 配器（静态）→ 声部识别 → 复调检测 →
+  主旋律交接检测 → 和弦 → 调性 → 主旋律提取（并列）/ 旋律形态
+</footer>
+{% block scripts %}{% endblock %}
+</body>
+</html>

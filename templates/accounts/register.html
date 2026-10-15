@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block title %}注册 · 音乐分析和处理智能体{% endblock %}
+{% block content %}
+<div class="auth-card">
+  <h2>注册</h2>
+  <p class="auth-hint">注册即为普通用户；管理员层级由现有管理员在后台授予。</p>
+  {% if form.non_field_errors %}
+    <div class="alert alert-error">{{ form.non_field_errors }}</div>
+  {% endif %}
+  <form method="post">
+    {% csrf_token %}
+    {% for field in form %}
+      <label class="field-label">{{ field.label }}</label>
+      {{ field }}
+      {% for err in field.errors %}<div class="field-error">{{ err }}</div>{% endfor %}
+    {% endfor %}
+    <button type="submit" class="btn btn-primary btn-block">注册</button>
+  </form>
+  <p class="auth-hint">已有账号？<a href="/accounts/login/">登录</a></p>
+</div>
+{% endblock %}

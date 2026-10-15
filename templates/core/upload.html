@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}上传作品 · 音乐分析和处理智能体{% endblock %}
+{% block content %}
+<div class="page-head"><h1>上传作品</h1></div>
+<div class="card">
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <label class="field-label">作品标题（可选）</label>
+    <input type="text" name="title" class="input" placeholder="留空则使用文件名">
+    <label class="field-label">音乐文件</label>
+    <input type="file" name="source_file" class="input" required
+           accept=".mid,.midi,.musicxml,.xml,.mxl,.mp3,.wav,.flac,.ogg,.m4a">
+    <div class="field-error">{{ form.errors.source_file }}</div>
+    <label class="checkbox-label">
+      <input type="checkbox" name="contains_voice">
+      音频含人声（MuScriptor 走「器乐 + 人声」两遍转录管线）
+    </label>
+    <button type="submit" class="btn btn-primary">上传并转换</button>
+  </form>
+</div>
+<div class="card muted-card">
+  <h3>输入路径说明</h3>
+  <ul class="muted-list">
+    <li><b>MusicXML</b>：直接进入分析；</li>
+    <li><b>MIDI</b>：自动经 music21 转为 MusicXML；</li>
+    <li><b>音频</b>：需 MuScriptor 转录为 MIDI（接口已预留，见
+        <code>core/converters/muscriptor.py</code>），再转 MusicXML。</li>
+  </ul>
+</div>
+{% endblock %}

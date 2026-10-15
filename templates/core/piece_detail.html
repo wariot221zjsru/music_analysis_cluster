@@ -1,0 +1,253 @@
+{% extends 'base.html' %}
+{% block title %}{{ piece.title }} · 分析详情{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ piece.title }}</h1>
+  <div class="piece-meta">
+    <span class="tag">{{ piece.get_source_type_display }}</span>
+    <span class="tag">{{ piece.contains_voice|yesno:'含人声,纯器乐' }}</span>
+    {% if piece.musicxml_file %}
+      <a class="tag tag-link" href="{{ piece.musicxml_file.url }}">MusicXML ⬇</a>
+    {% endif %}
+    {% if piece.midi_file %}
+      <a class="tag tag-link" href="{{ piece.midi_file.url }}">MIDI ⬇</a>
+    {% endif %}
+  </div>
+</div>
+
+{# ============ 三个分析按钮（节奏 / 旋律 / 主旋律提取并列） ============ #}
+<div class="action-bar card">
+  <div class="action-group">
+    <button class="btn btn-primary" data-group="rhythm" onclick="runGroup(this)">
+      🥁 分析节奏
+    </button>
+    <span class="action-hint">节奏网格与速度曲线 + 节奏型与律动分析</span>
+  </div>
+  <div class="action-group">
+    <button class="btn btn-primary" data-group="melody" onclick="runGroup(this)">
+      🎼 分析旋律
+    </button>
+    <span class="action-hint">配器 → 声部识别 → 复调 / 交接检测 → 和弦 → 调性 → 旋律形态</span>
+  </div>
+  <div class="action-group">
+    <button class="btn btn-outline" data-group="extraction" onclick="runGroup(this)">
+      🎯 主旋律提取
+    </button>
+    <span class="action-hint">与旋律分析并列（可选输出：MIDI / MusicXML 导出）</span>
+  </div>
+  <label class="checkbox-label force-label">
+    <input type="checkbox" id="force-rerun"> 重跑模式（清除本组已完成的旧结果）
+  </label>
+</div>
+
+{# ============ 步骤状态卡 ============ #}
+<div id="steps-container" class="steps-grid">
+  <div class="muted">加载中…</div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PIECE_ID = {{ piece.id }};
+const STEP_LABELS = {
+  convert: '格式转换',
+  rhythm_grid: '① 节奏网格与速度曲线',
+  rhythm_pattern: '② 节奏型与律动分析',
+  instrumentation: '③ 配器提取（静态）',
+  voice_id: '④ 声部识别',
+  polyphony: '⑤ 复调检测',
+  exchange: '⑥ 主旋律交接检测',
+  chords: '⑦ 和弦进行分析',
+  tonality: '⑧ 调性布局分析',
+  melody_extraction: '⑨ 主旋律提取（可选）',
+  melody_shape: '⑩ 旋律形态分析',
+};
+const STEP_ORDER = ['convert', 'rhythm_grid', 'rhythm_pattern', 'instrumentation',
+  'voice_id', 'polyphony', 'exchange', 'chords', 'tonality',
+  'melody_extraction', 'melody_shape'];
+let polling = null;
+
+async function fetchStatus() {
+  const res = await fetch(`/pieces/${PIECE_ID}/status/`);
+  return res.json();
+}
+
+async function runGroup(btn) {
+  const group = btn.dataset.group;
+  const force = document.getElementById('force-rerun').checked ? '1' : '';
+  const body = new URLSearchParams({group: group, force: force});
+  const res = await fetch(`/pieces/${PIECE_ID}/run/`, {
+    method: 'POST',
+    headers: {'X-CSRFToken': '{{ csrf_token }}',
+              'Content-Type': 'application/x-www-form-urlencoded'},
+    body: body.toString(),
+  });
+  const data = await res.json();
+  if (!data.ok) { alert(data.error || '启动失败'); return; }
+  if (data.message) { alert(data.message); }
+  startPolling();
+}
+
+function statusPill(status) {
+  const map = {
+    pending: ['等待中', 'pill-pending'],
+    running: ['运行中…', 'pill-running'],
+    done: ['已完成', 'pill-done'],
+    error: ['失败', 'pill-error'],
+  };
+  const [label, cls] = map[status] || [status, ''];
+  return `<span class="pill ${cls}">${label}</span>`;
+}
+
+function renderSteps(data) {
+  const container = document.getElementById('steps-container');
+  const results = data.results || {};
+  let html = '';
+  for (const step of STEP_ORDER) {
+    const r = results[step];
+    const label = STEP_LABELS[step];
+    if (!r) {
+      html += `<div class="step-card step-idle"><div class="step-head">
+        <span class="step-title">${label}</span>${statusPill('idle')}</div></div>`;
+      continue;
+    }
+    let body = '';
+    if (r.status === 'done' && r.output) body = renderOutput(step, r.output);
+    if (r.status === 'error') body = `<pre class="error-pre">${escapeHtml(r.error)}</pre>`;
+    html += `<div class="step-card step-${r.status}">
+      <div class="step-head"><span class="step-title">${label}</span>${statusPill(r.status)}</div>
+      ${body}</div>`;
+  }
+  container.innerHTML = html;
+  return data.any_running;
+}
+
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function jpre(obj) {
+  return `<pre class="json-pre">${escapeHtml(JSON.stringify(obj, null, 2))}</pre>`;
+}
+
+function tableFrom(rows, headers) {
+  let h = '<tr>' + headers.map(x => `<th>${x}</th>`).join('') + '</tr>';
+  let b = rows.map(r => '<tr>' + r.map(c => `<td>${c}</td>`).join('') + '</tr>').join('');
+  return `<table class="table small-table"><thead>${h}</thead><tbody>${b}</tbody></table>`;
+}
+
+/* ---------- 各步骤的结果渲染 ---------- */
+const RENDERERS = {
+  convert(o) {
+    return jpre(o);
+  },
+  rhythm_grid(o) {
+    const rows = (o.notes || []).map(n => [n.part, n.instrument || '—', n.note_count, n.total_duration]);
+    return `
+      <div class="kv"><b>拍号：</b>${(o.time_signatures||[]).map(t => `${t.measure}小节 ${t.numerator}/${t.denominator}`).join('，') || '—'}</div>
+      <div class="kv"><b>速度：</b>${(o.tempos||[]).map(t => `${t.bpm ? t.bpm + ' BPM' : ''} ${t.text||''}`).filter(Boolean).join('，') || '未标注（默认 120）'}</div>
+      <div class="kv"><b>小节数：</b>${o.measure_count}　<b>总时长（四分音符）：</b>${o.total_quarter_length}</div>
+      ${rows.length ? tableFrom(rows, ['声部', '乐器', '音符数', '总时值']) : ''}`;
+  },
+  rhythm_pattern(o) {
+    const s = o.stats || {};
+    return `
+      <div class="kv"><b>切分比例：</b>${(s.syncopation_ratio * 100).toFixed(1)}%</div>
+      <div class="kv"><b>主要节奏型：</b>${(s.top_measure_patterns||[]).map(p => `${p.pattern}（×${p.count}）`).join('；')}</div>
+      ${o.llm_analysis ? `<div class="llm-box"><b>AI 律动分析</b>${jpre(o.llm_analysis)}</div>` : ''}`;
+  },
+  instrumentation(o) {
+    const rows = (o.parts || []).map(p => [p.name, p.instrument, p.family, p.is_voice ? '人声' : '—', p.note_count]);
+    return tableFrom(rows, ['声部', '乐器', '分组', '人声', '音符数']) +
+      `<p class="muted small">配器为谱面元数据直接读取，未经大模型。</p>`;
+  },
+  voice_id(o) {
+    const rows = (o.roles || []).map(r => [r.part_name, r.role_candidate, r.mean_salience]);
+    const tl = (o.salience?.attribution_timeline || []).map(t =>
+      `${t.start_measure}–${t.end_measure} 小节 → ${o.salience.part_names[t.part_index] ?? '—'}`).join('；');
+    return tableFrom(rows, ['声部', '角色候选', '平均显著性']) +
+      (tl ? `<div class="kv"><b>主旋律归属时间线：</b>${tl}</div>` : '');
+  },
+  polyphony(o) {
+    return `
+      <div class="kv"><b>判定：</b><span class="highlight">${o.branch}</span>（密度 ${(o.ratio * 100).toFixed(1)}% ≥ 阈值 ${(o.threshold * 100).toFixed(0)}% ？ ${o.is_polyphonic ? '是' : '否'}，置信度 ${o.confidence}）</div>
+      <div class="kv"><b>复调声部：</b>${(o.polyphonic_parts||[]).length ? o.polyphonic_parts.join(', ') : '无'}</div>`;
+  },
+  exchange(o) {
+    const rows = (o.switches || []).map(s => [`第 ${s.at_measure} 小节`, `${s.from_name} → ${s.to_name}`, s.similarity]);
+    return `
+      <div class="kv"><b>判定：</b><span class="highlight">${o.branch}</span>（有效切换 ${o.switch_count} 次 ≥ ${o.min_switches}，相似度阈值 ${o.similarity_threshold}）</div>
+      ${rows.length ? tableFrom(rows, ['切换位置', '声部交接', '动机相似度']) : ''}
+      ${o.is_exchange && o.attribution_timeline ? `<div class="kv"><b>归属时间线：</b>${o.attribution_timeline.map(t => `${t.start_measure}–${t.end_measure}（${t.part_name}）`).join(' → ')}</div>` : ''}`;
+  },
+  chords(o) {
+    const rows = (o.progression || []).map(r => [r.label, r.chord || '—', r.function || '—', r.inversion || '—', r.confidence ?? '—']);
+    return `<div class="kv"><b>窗口：</b>${o.window_type === 'measure' ? '按小节' : '按拍'}，共 ${o.window_count} 个</div>` +
+      tableFrom(rows, ['窗口', '和弦', '功能', '转位', '置信度']);
+  },
+  tonality(o) {
+    const regions = (o.regions || []).map(r => [`${r.start_measure}–${r.end_measure}`, r.key, r.type, r.evidence || '']);
+    const mods = (o.modulations || []).map(m => [`第 ${m.measure} 小节`, `${m.from_key} → ${m.to_key}`, m.technique || '']);
+    return `
+      <div class="kv"><b>主调：</b><span class="highlight">${o.main_key || '—'}</span>（置信度 ${o.confidence ?? '—'}）</div>
+      ${regions.length ? tableFrom(regions, ['小节范围', '调性', '类型', '依据']) : ''}
+      ${mods.length ? tableFrom(mods, ['转调点', '调性变化', '手法']) : ''}
+      ${o.description ? `<p class="llm-desc">${escapeHtml(o.description)}</p>` : ''}`;
+  },
+  melody_extraction(o) {
+    const rows = (o.candidates || []).map(c => [c.part_name, (c.confidence * 100).toFixed(1) + '%']);
+    let exports = '';
+    if (o.exports && o.exports.midi) {
+      exports = `<div class="kv"><b>导出：</b>
+        <a class="tag tag-link" href="/media/${o.exports.midi}">主旋律 MIDI ⬇</a>
+        <a class="tag tag-link" href="/media/${o.exports.musicxml}">主旋律 MusicXML ⬇</a></div>`;
+    }
+    return `<div class="kv"><b>模式：</b><span class="highlight">${o.mode}</span></div>` +
+      tableFrom(rows, ['候选声部', '置信度']) + exports;
+  },
+  melody_shape(o) {
+    return `<div class="kv"><b>分支：</b><span class="highlight">${o.branch}</span></div>` +
+      (o.analyses || []).map((a, i) => `
+        <details class="melody-detail" ${i === 0 ? 'open' : ''}>
+          <summary>${escapeHtml(a.segment)}</summary>
+          <div class="kv"><b>本地特征：</b>${jpre(a.features)}</div>
+          <div class="llm-box"><b>AI 旋律分析</b>${jpre(a.llm_analysis)}</div>
+        </details>`).join('');
+  },
+};
+
+function renderOutput(step, output) {
+  const fn = RENDERERS[step];
+  return fn ? fn(output) : jpre(output);
+}
+
+/* ---------- 轮询 ---------- */
+async function poll() {
+  try {
+    const data = await fetchStatus();
+    const running = renderSteps(data);
+    if (!running && polling) {
+      clearInterval(polling);
+      polling = null;
+      setButtonsDisabled(false);
+    }
+  } catch (e) { /* 网络抖动忽略 */ }
+}
+
+function setButtonsDisabled(disabled) {
+  document.querySelectorAll('.action-bar button[data-group]').forEach(
+    b => b.disabled = disabled);
+}
+
+function startPolling() {
+  setButtonsDisabled(true);
+  if (polling) return;
+  polling = setInterval(poll, 2500);
+}
+
+/* 首次加载 */
+poll().then(running => { if (running) startPolling(); });
+</script>
+{% endblock %}
