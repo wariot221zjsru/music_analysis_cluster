@@ -6,16 +6,40 @@
   <div class="piece-meta">
     <span class="tag">{{ piece.get_source_type_display }}</span>
     <span class="tag">{{ piece.contains_voice|yesno:'含人声,纯器乐' }}</span>
+    <span class="tag {% if piece.is_public %}tag-public{% endif %}">
+      {{ piece.visibility_display }}
+    </span>
     {% if piece.musicxml_file %}
       <a class="tag tag-link" href="{{ piece.musicxml_file.url }}">MusicXML ⬇</a>
     {% endif %}
     {% if piece.midi_file %}
       <a class="tag tag-link" href="{{ piece.midi_file.url }}">MIDI ⬇</a>
     {% endif %}
+    {% if can_edit %}
+    <form method="post" action="/pieces/{{ piece.id }}/visibility/" class="inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-ghost btn-sm">
+        {% if piece.is_public %}设为私有{% else %}设为公开{% endif %}
+      </button>
+    </form>
+    {% endif %}
   </div>
 </div>
 
+{% if piece.audio_purged %}
+<div class="alert alert-info">
+  原始音频为临时文件，转换完成后已自动清理，未做长期保存。MIDI 与 MusicXML 已永久入库。
+</div>
+{% endif %}
+
+{% if not can_edit %}
+<div class="alert alert-info">
+  这是 {{ piece.owner.username }} 公开的作品，仅可查看分析结果，不能代为运行分析。
+</div>
+{% endif %}
+
 {# ============ 三个分析按钮（节奏 / 旋律 / 主旋律提取并列） ============ #}
+{% if can_edit %}
 <div class="action-bar card">
   <div class="action-group">
     <button class="btn btn-primary" data-group="rhythm" onclick="runGroup(this)">
@@ -39,6 +63,7 @@
     <input type="checkbox" id="force-rerun"> 重跑模式（清除本组已完成的旧结果）
   </label>
 </div>
+{% endif %}
 
 {# ============ 步骤状态卡 ============ #}
 <div id="steps-container" class="steps-grid">
@@ -75,7 +100,8 @@ async function fetchStatus() {
 
 async function runGroup(btn) {
   const group = btn.dataset.group;
-  const force = document.getElementById('force-rerun').checked ? '1' : '';
+  const forceEl = document.getElementById('force-rerun');
+  const force = (forceEl && forceEl.checked) ? '1' : '';
   const body = new URLSearchParams({group: group, force: force});
   const res = await fetch(`/pieces/${PIECE_ID}/run/`, {
     method: 'POST',

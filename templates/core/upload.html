@@ -15,6 +15,10 @@
       <input type="checkbox" name="contains_voice">
       音频含人声（MuScriptor 走「器乐 + 人声」两遍转录管线）
     </label>
+    <label class="checkbox-label">
+      <input type="checkbox" name="is_public">
+      公开该作品（其他登录用户可查看其分析结果；不勾选则仅自己可见）
+    </label>
     <button type="submit" class="btn btn-primary">上传并转换</button>
   </form>
 </div>
@@ -25,6 +29,13 @@
     <li><b>MIDI</b>：自动经 music21 转为 MusicXML；</li>
     <li><b>音频</b>：需 MuScriptor 转录为 MIDI（接口已预留，见
         <code>core/converters/muscriptor.py</code>），再转 MusicXML。</li>
+  </ul>
+  <h3>存储策略</h3>
+  <ul class="muted-list">
+    <li><b>原始音频</b>只作临时文件存放，转换成功后立即删除，不做长期保存；</li>
+    <li><b>MIDI</b> 与 <b>MusicXML</b> 永久保存，且<b>分目录</b>存放
+        （<code>media/midi/…</code>、<code>media/musicxml/…</code>）；</li>
+    <li>上传 MIDI / MusicXML 时，源文件同样会归入对应永久目录。</li>
   </ul>
 </div>
 {% endblock %}

@@ -23,13 +23,21 @@ class Piece(models.Model):
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
                               related_name='pieces', verbose_name='上传者')
     title = models.CharField('标题', max_length=200)
-    source_file = models.FileField('源文件', upload_to='pieces/%Y%m%d/')
+    source_file = models.FileField(
+        '源文件（临时）', upload_to='tmp/%Y%m%d/', blank=True,
+        help_text='原始音频仅作临时存放，转换成功后自动删除，不做长期保存')
     source_type = models.CharField('源类型', max_length=16,
                                    choices=SourceType.choices)
     contains_voice = models.BooleanField('是否含人声', default=False,
                                          help_text='含人声时 MuScriptor 走"器乐+人声"两遍转录管线')
-    midi_file = models.FileField('转录 MIDI', upload_to='converted/%Y%m%d/', blank=True)
-    musicxml_file = models.FileField('MusicXML', upload_to='converted/%Y%m%d/', blank=True)
+    is_public = models.BooleanField(
+        '公开', default=False,
+        help_text='公开后其他登录用户也可查看该作品及其分析结果（不可代为运行分析）')
+    source_purged = models.BooleanField('临时源文件已清理', default=False)
+    midi_file = models.FileField('MIDI（永久）', upload_to='midi/%Y%m%d/', blank=True,
+                                 help_text='永久保存，独立于 MusicXML 目录')
+    musicxml_file = models.FileField('MusicXML（永久）', upload_to='musicxml/%Y%m%d/',
+                                     blank=True, help_text='永久保存，独立于 MIDI 目录')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -40,6 +48,15 @@ class Piece(models.Model):
 
     def __str__(self):
         return f'{self.title}（{self.get_source_type_display()}）'
+
+    @property
+    def visibility_display(self) -> str:
+        return '公开' if self.is_public else '私有'
+
+    @property
+    def audio_purged(self) -> bool:
+        """原始音频是否已被清理（音频类作品才有意义）。"""
+        return self.source_type == self.SourceType.AUDIO and self.source_purged
 
 
 class AnalysisResult(models.Model):

@@ -1,5 +1,4 @@
 from django import forms
-from .models import Piece
 
 
 class UploadForm(forms.Form):
@@ -12,4 +11,7 @@ class UploadForm(forms.Form):
                                       attrs={'class': 'input'}))
     contains_voice = forms.BooleanField(
         label='音频含人声（MuScriptor 将走"器乐+人声"两遍转录管线）',
+        required=False)
+    is_public = forms.BooleanField(
+        label='公开该作品（其他登录用户可查看其分析结果）',
         required=False)

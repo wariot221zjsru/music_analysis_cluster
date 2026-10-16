@@ -4,7 +4,8 @@ from pathlib import Path
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, user_passes_test
-from django.http import JsonResponse
+from django.db.models import Q
+from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
@@ -28,13 +29,24 @@ def _staff_required(view):
     return user_passes_test(lambda u: u.is_staff, login_url='/accounts/login/')(view)
 
 
+def _can_view(user, piece: Piece) -> bool:
+    """读取权限：本人 / 管理员 / 已公开。"""
+    return user.is_staff or piece.owner_id == user.id or piece.is_public
+
+
+def _can_edit(user, piece: Piece) -> bool:
+    """操作权限（运行分析、改可见性）：本人 / 管理员。"""
+    return user.is_staff or piece.owner_id == user.id
+
+
 @login_required
 def dashboard(request):
-    """作品列表（管理员可看全部，普通用户只看自己的）。"""
+    """作品列表：本人作品 + 已公开作品（管理员可看全部）。"""
     if request.user.is_staff:
         pieces = Piece.objects.select_related('owner').all()
     else:
-        pieces = Piece.objects.filter(owner=request.user)
+        pieces = Piece.objects.select_related('owner').filter(
+            Q(owner=request.user) | Q(is_public=True))
     steps_done = {
         p.id: {r.step for r in p.results.filter(status='done')}
         for p in pieces
@@ -61,6 +73,7 @@ def upload(request):
                 source_file=f,
                 source_type=EXT_TO_TYPE[ext],
                 contains_voice=form.cleaned_data['contains_voice'],
+                is_public=form.cleaned_data['is_public'],
             )
             start_convert_async(piece)
             messages.success(request, '上传成功，正在转换格式…')
@@ -71,12 +84,27 @@ def upload(request):
 @login_required
 def piece_detail(request, piece_id: int):
     piece = get_object_or_404(Piece, pk=piece_id)
-    if piece.owner_id != request.user.id and not request.user.is_staff:
-        piece = get_object_or_404(Piece, pk=piece_id, owner=request.user)
+    if not _can_view(request.user, piece):
+        raise Http404('作品不存在或未公开。')
     return render(request, 'core/piece_detail.html', {
         'piece': piece,
         'step_labels': STEP_LABELS,
+        'can_edit': _can_edit(request.user, piece),
     })
+
+
+@login_required
+@require_POST
+def toggle_visibility(request, piece_id: int):
+    """切换作品公开 / 私有（仅本人或管理员）。"""
+    piece = get_object_or_404(Piece, pk=piece_id)
+    if not _can_edit(request.user, piece):
+        return JsonResponse({'ok': False, 'error': '无权操作该作品。'}, status=403)
+    piece.is_public = not piece.is_public
+    piece.save(update_fields=['is_public', 'updated_at'])
+    messages.success(request, '作品已设为「公开」，其他登录用户可见。'
+                     if piece.is_public else '作品已设为「私有」，仅本人可见。')
+    return redirect('core:piece_detail', piece_id=piece.id)
 
 
 @login_required
@@ -84,7 +112,7 @@ def piece_detail(request, piece_id: int):
 def run_group(request, piece_id: int):
     """触发一组分析（rhythm / melody / extraction）。"""
     piece = get_object_or_404(Piece, pk=piece_id)
-    if piece.owner_id != request.user.id and not request.user.is_staff:
+    if not _can_edit(request.user, piece):
         return JsonResponse({'ok': False, 'error': '无权操作该作品。'}, status=403)
 
     group = request.POST.get('group', '')
@@ -109,7 +137,7 @@ def run_group(request, piece_id: int):
 def piece_status(request, piece_id: int):
     """状态轮询端点（前端每 2.5s 调用）。"""
     piece = get_object_or_404(Piece, pk=piece_id)
-    if piece.owner_id != request.user.id and not request.user.is_staff:
+    if not _can_view(request.user, piece):
         return JsonResponse({'ok': False, 'error': '无权访问该作品。'}, status=403)
     results = {}
     for r in piece.results.all():

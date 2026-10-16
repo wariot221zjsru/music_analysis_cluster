@@ -7,8 +7,10 @@ admin.site.site_header = '音乐分析和处理智能体 · 管理后台'
 
 @admin.register(Piece)
 class PieceAdmin(admin.ModelAdmin):
-    list_display = ('title', 'owner', 'source_type', 'contains_voice', 'created_at')
-    list_filter = ('source_type', 'contains_voice', 'created_at')
+    list_display = ('title', 'owner', 'source_type', 'contains_voice',
+                    'is_public', 'source_purged', 'created_at')
+    list_filter = ('source_type', 'contains_voice', 'is_public',
+                   'source_purged', 'created_at')
     search_fields = ('title', 'owner__username')
 
 

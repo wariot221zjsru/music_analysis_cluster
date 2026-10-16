@@ -9,5 +9,7 @@ urlpatterns = [
     path('pieces/<int:piece_id>/', views.piece_detail, name='piece_detail'),
     path('pieces/<int:piece_id>/run/', views.run_group, name='run_group'),
     path('pieces/<int:piece_id>/status/', views.piece_status, name='piece_status'),
+    path('pieces/<int:piece_id>/visibility/', views.toggle_visibility,
+         name='toggle_visibility'),
     path('settings/', views.system_settings, name='settings'),
 ]

@@ -57,6 +57,17 @@
 
 ==============================================================================
 """
+# 导入legacy
+import os, sys
+# 获取当前文件的绝对路径，向上退两级到达项目根目录（假设当前在 dl_tutorial/ch02_base/）
+# 若您的目录层级不同，请调整 os.path.dirname 的次数。
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+#
+from legacy.pyScriptor_base__func import pyscriptor_transcribe_and_postprocess#导入纯器乐转录函数
+####
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -90,12 +101,16 @@ def transcribe_instrumental(
 
     实现参见模块 docstring【纯器乐】一节。
     """
-    raise MuScriptorNotImplemented(
-        'MuScriptor 纯器乐转录接口尚未实现。'
-        '请在 core/converters/muscriptor.py 的 transcribe_instrumental() '
-        '中按模块 docstring 的说明补全实现（参考 pyScriptor_base.py：'
-        'model.transcribe_and_postprocess() 一步完成转录 + 节拍对齐）。'
-    )
+    # 调用纯器乐转录函数
+    rslt=pyscriptor_transcribe_and_postprocess(audio_path, output_midi_path)
+    if rslt!=True:
+        raise MuScriptorNotImplemented(
+            rslt,
+            'MuScriptor 纯器乐转录接口尚未实现或存在问题或转录失败。'#
+            '请在 core/converters/muscriptor.py 的 transcribe_instrumental() '
+            '中按模块 docstring 的说明补全实现（参考 pyScriptor_base.py：'
+            'model.transcribe_and_postprocess() 一步完成转录 + 节拍对齐）。'
+        )
 
 
 def transcribe_instrumental_with_voice(

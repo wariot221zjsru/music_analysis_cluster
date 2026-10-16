@@ -131,6 +131,7 @@ body {
   text-decoration: none;
 }
 .tag-link:hover { background: #e2d9f7; }
+.tag-public { background: #dff3e6; color: #14795a; }
 .pill { padding: 3px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
 .pill-done { background: #e2f6ec; color: var(--done); }
 .pill-running { background: #fdf1dc; color: var(--running); }
@@ -140,6 +141,7 @@ body {
 .alert { padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; font-size: 14px; }
 .alert-success { background: #e2f6ec; color: #14795a; }
 .alert-error { background: #fdeae9; color: #b3372f; }
+.alert-info { background: #e8eefc; color: #23509b; }
 
 /* ---------- 操作栏 ---------- */
 .action-bar { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end; }

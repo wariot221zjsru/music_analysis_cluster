@@ -48,6 +48,8 @@ python manage.py runserver
 
 1. **上传作品**：MIDI / MusicXML 直接可分析；音频上传后自动走转换
    （音频需 MuScriptor，见第四节）。
+   上传时可勾选 **「公开该作品」**（其他登录用户可查看其分析结果；
+   不勾选则仅自己可见，之后可在详情页随时切换）。
 2. **三个按钮（对应讨论定稿的分支策略）**：
    - 「分析节奏」→ 节奏网格与速度曲线 + 节奏型与律动分析
    - 「分析旋律」→ 配器（静态）→ 声部识别 → 复调检测 → 主旋律交接检测
@@ -57,6 +59,21 @@ python manage.py runserver
 3. **结果**：每个步骤一张状态卡，运行中自动轮询刷新；失败显示完整错误。
 4. **系统设置（管理员）**：复调阈值、交接最少切换次数、动机相似度阈值、
    分析窗口、和弦聚合窗口、dsh profile / 超时，全部前端可调。
+
+## 二·五、文件存储策略
+
+| 文件 | 存放位置 | 保留策略 |
+|---|---|---|
+| 原始音频 | `media/tmp/<日期>/` | **临时文件**，转换成功后自动删除，不长期保存 |
+| 上传的 MIDI / MusicXML 源 | `media/tmp/<日期>/` | 复制入下方永久目录后一并清理 |
+| **MIDI** | `media/midi/<日期>/p<作品id>/` | **永久保存** |
+| **MusicXML** | `media/musicxml/<日期>/p<作品id>/` | **永久保存** |
+| 主旋律导出 | `media/melody/<日期>/p<作品id>/` | 永久保存（可选输出） |
+
+- MIDI 与 MusicXML **分目录存放**，互不混放；每作品再分一层子目录，同名文件不覆盖。
+- 转换**失败**时保留临时源文件以便重试；用
+  `python manage.py purge_tmp --hours 24` 定期清理残留（默认清理 24 小时前的）。
+- 实现在 `core/storage.py`；转换层 `core/converters/musicxml.py` 负责入库与清理。
 
 ## 三、架构（与计划书一致）
 
@@ -78,8 +95,9 @@ python manage.py runserver
 
 | 模块 | 文件 |
 |---|---|
+| 存储策略（临时/永久、分目录） | `core/storage.py` |
 | MuScriptor 预留接口 | `core/converters/muscriptor.py` |
-| MIDI→MusicXML | `core/converters/musicxml.py` |
+| MIDI→MusicXML + 入库/清理 | `core/converters/musicxml.py` |
 | dsh 封装 | `core/analysis/llm.py` |
 | 谱面解析 / KS / LCS 等 | `core/analysis/scoredata.py` |
 | 节奏两步 | `core/analysis/rhythm.py` |

@@ -7,11 +7,10 @@
 旋律形态分析（叙述链）按同样分支组织输出。
 """
 import copy
-from pathlib import Path
 
-from django.conf import settings
-from django.core.files.base import File
+from django.utils import timezone
 
+from .. import storage
 from .llm import run_llm_json, JSON_ONLY
 from .scoredata import (
     ScoreData, build_measure_map, interval_seq, midi_to_name,
@@ -67,19 +66,24 @@ def _export_timeline_spliced(data: ScoreData, timeline: list):
 
 
 def _save_stream(piece, stream_obj, stem: str):
-    """把 music21 Stream 写出为 MIDI + MusicXML 并挂到 piece 的 media 目录。"""
-    out_dir = Path(piece.source_file.path).parent
-    midi_path = out_dir / f'{stem}.mid'
-    xml_path = out_dir / f'{stem}.musicxml'
-    stream_obj.write('midi', fp=str(midi_path))
-    stream_obj.write('musicxml', fp=str(xml_path))
+    """把 music21 Stream 写出为 MIDI + MusicXML，存入永久目录（media/melody/…）。
 
-    def rel(p):
-        return str(p.resolve().relative_to(
-            Path(settings.MEDIA_ROOT).resolve())).replace('\\', '/')
-
-    exports = {'midi': rel(midi_path), 'musicxml': rel(xml_path)}
-    return exports
+    注意：原始音频 / 源文件在转换完成后已被清理，因此这里不能依赖
+    ``piece.source_file.path``，统一走 core.storage 的永久存储。
+    """
+    workdir = storage.new_workdir(prefix=f'melody_p{piece.id}_')
+    try:
+        midi_path = workdir / f'{stem}.mid'
+        xml_path = workdir / f'{stem}.musicxml'
+        stream_obj.write('midi', fp=str(midi_path))
+        stream_obj.write('musicxml', fp=str(xml_path))
+        rel_dir = f'melody/{timezone.localdate():%Y%m%d}/p{piece.id}'
+        return {
+            'midi': storage.store_file(rel_dir, midi_path, f'{stem}.mid'),
+            'musicxml': storage.store_file(rel_dir, xml_path, f'{stem}.musicxml'),
+        }
+    finally:
+        storage.cleanup_workdir(workdir)
 
 
 def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
