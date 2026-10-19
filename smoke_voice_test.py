@@ -181,7 +181,7 @@ def main():
     check('详情页 200', resp.status_code == 200)
     check('标签显示「含人声」', '>含人声<' in body)
     check('title 说明按文件实际声部判定',
-          '按上传文件内的实际声部判定' in body, )
+          '按作品文件内的实际声部判定' in body, )
 
     print('\n[命令] refresh_voice 重算')
     call_command('refresh_voice', verbosity=0)

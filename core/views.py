@@ -187,7 +187,8 @@ TRIGGER_LABELS = {
     'retry-convert': '手动重新转换',
     'group:rhythm': '「分析节奏」按钮',
     'group:melody': '「分析旋律」按钮',
-    'group:extraction': '「主旋律提取」按钮',
+    'group:extraction': '「主旋律声部识别」按钮',
+    'group:line': '「主旋律线追踪」按钮',
     'group:sts': '「结构 / 织体 / 风格」一键全跑',
     'legacy': '历史遗留（本功能上线前的结果）',
 }
@@ -484,6 +485,15 @@ def system_settings(request):
             config.exchange_min_switches = int(request.POST['exchange_min_switches'])
             config.exchange_similarity_threshold = float(
                 request.POST['exchange_similarity_threshold'])
+            # 主旋律线追踪（逐段）：与上面的交接检测互不相干，单独一组参数
+            config.melody_voice_priority = bool(
+                request.POST.get('melody_voice_priority'))
+            config.melody_segment_min_bars = int(
+                request.POST['melody_segment_min_bars'])
+            config.melody_confidence_high = float(
+                request.POST['melody_confidence_high'])
+            config.melody_confidence_mid = float(
+                request.POST['melody_confidence_mid'])
             config.analysis_window_bars = int(request.POST['analysis_window_bars'])
             config.chord_window = request.POST['chord_window']
             config.dsh_profile = request.POST['dsh_profile'].strip() or 'headless'

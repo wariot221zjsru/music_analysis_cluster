@@ -32,6 +32,40 @@
     </div>
   </div>
 
+  <h3>主旋律线追踪（逐段 · MIR 口径）</h3>
+  <p class="field-hint">
+    这一组只作用于「主旋律线追踪（逐段）」卡片，与上面的交接检测无关：
+    追踪不受"是否交接"门控，前奏 / 间奏 / 尾奏同样提取。
+  </p>
+  <div class="settings-grid">
+    <div>
+      <label class="checkbox-label">
+        <input type="checkbox" name="melody_voice_priority"
+               {% if config.melody_voice_priority %}checked{% endif %}>
+        人声优先
+      </label>
+      <p class="field-hint">人声在唱就归人声；人声休止的段落退回最突出的器乐声部。</p>
+    </div>
+    <div>
+      <label class="field-label">分段最小长度（小节）</label>
+      <input type="number" min="1" max="32" name="melody_segment_min_bars" class="input"
+             value="{{ config.melody_segment_min_bars }}">
+      <p class="field-hint">短于此值的归属碎片并入相邻段，抑制窗间抖动。默认 2。</p>
+    </div>
+    <div>
+      <label class="field-label">置信度「高」下限</label>
+      <input type="number" step="0.01" min="0" max="1" name="melody_confidence_high"
+             class="input" value="{{ config.melody_confidence_high }}">
+      <p class="field-hint">段内平均 margin（第一名 − 第二名显著性）≥ 该值标为「高」。</p>
+    </div>
+    <div>
+      <label class="field-label">置信度「中」下限</label>
+      <input type="number" step="0.01" min="0" max="1" name="melody_confidence_mid"
+             class="input" value="{{ config.melody_confidence_mid }}">
+      <p class="field-hint">低于它标为「低」——两段归属接近，建议人工复核。</p>
+    </div>
+  </div>
+
   <h3>分析窗口</h3>
   <div class="settings-grid">
     <div>

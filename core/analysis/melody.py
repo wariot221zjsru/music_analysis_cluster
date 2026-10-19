@@ -1,9 +1,17 @@
-"""主旋律提取（可选输出、与旋律分析并列）+ 旋律形态分析。
+"""主旋律声部识别（选轨，旧口径）+ 旋律形态分析。
 
-分支策略（计划书 4.5.2）：
+定位：本模块回答"**整曲（或少数几个交接段）哪个声部是主旋律**"——
+即 MIR 里的 melody voice / track identification（选轨）任务。
+
+分支策略（计划书 4.5.2，保持不变）：
   单声   → 唯一主旋律，直接导出 MIDI / MusicXML
   复调   → 多候选 + 置信度（不强行选唯一一条）
-  交接   → 主旋律归属时间线 + 按时间线拼接导出
+  交接   → 先按阈值判定是否为主旋律交接，是则按归属时间线分段拼接导出
+
+与 core.analysis.melody_line 的分工（两张卡并列展示、互不干扰）：
+  本模块      = 选轨（整曲 / 交接型），受"是否交接"门控，前奏可能为器乐而丢掉
+  melody_line = 逐段追踪（MIR 旋律线），不受门控，前奏 / 间奏同样提取
+
 旋律形态分析（叙述链）按同样分支组织输出。
 """
 import copy
@@ -17,7 +25,7 @@ from .scoredata import (
 )
 
 
-# ---------------- 主旋律提取（并列、可选） ----------------
+# ---------------- 主旋律声部识别（选轨，并列、可选） ----------------
 
 def _export_part_as_melody(data: ScoreData, part_index: int):
     """把声部抽出为独立旋律 Stream（music21）。"""
@@ -65,7 +73,7 @@ def _export_timeline_spliced(data: ScoreData, timeline: list):
     return part
 
 
-def _save_stream(piece, stream_obj, stem: str):
+def save_stream(piece, stream_obj, stem: str):
     """把 music21 Stream 写出为 MIDI + MusicXML，存入永久目录（media/melody/…）。
 
     注意：原始音频 / 源文件在转换完成后已被清理，因此这里不能依赖
@@ -88,7 +96,11 @@ def _save_stream(piece, stream_obj, stem: str):
 
 def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
                       poly_out: dict, exchange_out: dict) -> dict:
-    """主旋律提取主入口（用户单独触发；复调→多候选，交接→时间线）。"""
+    """主旋律**声部识别**（选轨）主入口。
+
+    用户单独触发；复调→多候选，交接→时间线分段拼接。
+    判定口径与阈值沿用原有实现（exchange 的两个阈值不变）。
+    """
     sal = voice_out['salience']
     part_names = sal['part_names']
 
@@ -119,13 +131,13 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
         spliced = _export_timeline_spliced(data, timeline)
         result['mode'] = '主旋律交接（时间线式归属）'
         result['attribution_timeline'] = timeline
-        result['exports'] = _save_stream(piece, spliced, 'melody_spliced')
+        result['exports'] = save_stream(piece, spliced, 'melody_spliced')
     elif poly_out['is_polyphonic']:
         # 复调分支：多候选 + 置信度；导出 top-1（供参考）
         result['mode'] = '复调（多候选 + 置信度，不强行选唯一）'
         if candidates:
             top = _export_part_as_melody(data, candidates[0]['part_index'])
-            result['exports'] = _save_stream(
+            result['exports'] = save_stream(
                 piece, top, f'melody_candidate_{candidates[0]["part_index"]}')
     else:
         # 单声 / 主调：显著性最高声部即主旋律
@@ -133,7 +145,7 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
         if candidates:
             top = _export_part_as_melody(data, candidates[0]['part_index'])
             result['chosen'] = candidates[0]
-            result['exports'] = _save_stream(
+            result['exports'] = save_stream(
                 piece, top, f'melody_{candidates[0]["part_index"]}')
 
     return result

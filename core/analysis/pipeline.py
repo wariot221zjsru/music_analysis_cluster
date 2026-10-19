@@ -4,7 +4,8 @@
   「分析节奏」     → rhythm_grid + rhythm_pattern
   「分析旋律」     → instrumentation → voice_id → polyphony → exchange
                     → chords → tonality → melody_shape（依赖自动补齐）
-  「主旋律提取」   → melody_extraction（与旋律分析并列；依赖自动补齐）
+  「主旋律声部识别」→ melody_extraction（选轨，旧口径；依赖自动补齐）
+  「主旋律线追踪」 → melody_line（逐段，MIR 口径；只依赖 voice_id）
 
 更高层三问（/pieces/<id>/sts/ 页面，三个卡片可分别单独点击）：
   「音乐结构」 → structure ← rhythm_grid + chords + tonality
@@ -23,6 +24,7 @@ from ..models import AnalysisResult, AnalysisRun, Piece, QAQuestion, SystemConfi
 from . import chords as chords_mod
 from . import instrumentation as instr_mod
 from . import melody as melody_mod
+from . import melody_line as melody_line_mod
 from . import qa as qa_mod
 from . import rhythm as rhythm_mod
 from . import style as style_mod
@@ -40,7 +42,7 @@ CANONICAL_ORDER = [
     'rhythm_grid', 'rhythm_pattern',
     'instrumentation', 'voice_id', 'polyphony', 'exchange',
     'chords', 'tonality',
-    'melody_extraction', 'melody_shape',
+    'melody_extraction', 'melody_line', 'melody_shape',
     'structure', 'texture', 'style',
 ]
 
@@ -60,6 +62,8 @@ STEP_DEPS = {
     'chords': ['voice_id', 'polyphony'],
     'tonality': ['chords'],
     'melody_extraction': ['voice_id', 'polyphony', 'exchange'],
+    # 逐段追踪只看显著性矩阵与人声标记：不看 polyphony、更不看 exchange
+    'melody_line': ['voice_id'],
     'melody_shape': ['rhythm_grid', 'voice_id', 'polyphony', 'exchange',
                      'chords', 'tonality'],
 }
@@ -70,6 +74,8 @@ GROUPS = {
     'melody': ['instrumentation', 'voice_id', 'polyphony', 'exchange',
                'chords', 'tonality', 'melody_shape'],
     'extraction': ['melody_extraction'],
+    # 主旋律线追踪：与上面的选轨并列，独立触发
+    'line': ['melody_line'],
     # 结构 / 织体 / 风格：一键全跑（页面默认让三者分开点击）
     'sts': ['structure', 'texture', 'style'],
 }
@@ -169,6 +175,9 @@ def _run_one_step(ctx: _Ctx, step: str):
         return melody_mod.melody_extraction(
             data, cfg, ctx.piece, ctx.outputs['voice_id'],
             ctx.outputs['polyphony'], ctx.outputs['exchange'])
+    if step == 'melody_line':
+        return melody_line_mod.melody_line(
+            data, cfg, ctx.piece, ctx.outputs['voice_id'])
     if step == 'melody_shape':
         return melody_mod.melody_shape(
             data, cfg, ctx.outputs['voice_id'], ctx.outputs['polyphony'],

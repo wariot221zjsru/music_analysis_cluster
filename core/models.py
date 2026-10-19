@@ -5,7 +5,9 @@
     instrumentation → voice_id → polyphony / exchange
     chords ← voice_id + polyphony
     tonality ← chords
-    melody_extraction（可选、并列）← voice_id + polyphony + exchange
+    melody_extraction（主旋律声部识别 / 选轨，可选、并列）
+                  ← voice_id + polyphony + exchange
+    melody_line（主旋律线追踪 / 逐段，MIR 口径）← voice_id
     melody_shape ← rhythm_grid + voice_id + polyphony + exchange + chords + tonality
 
 更高层三问（新页 /pieces/<id>/sts/）：
@@ -80,11 +82,12 @@ class AnalysisResult(models.Model):
         EXCHANGE = 'exchange', '主旋律交接检测'
         CHORDS = 'chords', '和弦进行分析'
         TONALITY = 'tonality', '调性布局分析'
-    MELODY_EXTRACTION = 'melody_extraction', '主旋律提取（可选输出）'
-    MELODY_SHAPE = 'melody_shape', '旋律形态分析'
-    STRUCTURE = 'structure', '音乐结构分析（乐句 / 乐段 / 曲式）'
-    TEXTURE = 'texture', '织体分析'
-    STYLE = 'style', '风格分析'
+        MELODY_EXTRACTION = 'melody_extraction', '主旋律声部识别（选轨）'
+        MELODY_LINE = 'melody_line', '主旋律线追踪（逐段）'
+        MELODY_SHAPE = 'melody_shape', '旋律形态分析'
+        STRUCTURE = 'structure', '音乐结构分析（乐句 / 乐段 / 曲式）'
+        TEXTURE = 'texture', '织体分析'
+        STYLE = 'style', '风格分析'
 
     class Status(models.TextChoices):
         PENDING = 'pending', '等待中'
@@ -195,6 +198,23 @@ class SystemConfig(models.Model):
     exchange_similarity_threshold = models.FloatField(
         '交接动机相似度阈值', default=0.60,
         help_text='切换前后声部之间的音高/动机相似度达到该值才判为交接（fugato / 模仿）')
+    # —— 主旋律线追踪（逐段，MIR 口径）——
+    # 与上面的「交接检测」互不相干：交接检测是曲式学描述（同动机传递），
+    # 主旋律线追踪是 MIR 任务（每一段谁在听觉前景），不受 is_exchange 门控。
+    melody_voice_priority = models.BooleanField(
+        '人声优先', default=True,
+        help_text='逐段追踪时，人声在唱就归人声，人声休止（前奏 / 间奏 / 尾奏）'
+                  '才退回显著性最高的器乐声部。关掉则全程按显著性选轨。')
+    melody_segment_min_bars = models.IntegerField(
+        '分段最小长度（小节）', default=2,
+        help_text='短于该长度的归属碎片并入相邻段，抑制窗间归属抖动。'
+                  '前奏 / 间奏本身短于此值且两端归属不同时同样会被并入。')
+    melody_confidence_high = models.FloatField(
+        '置信度「高」下限', default=0.25,
+        help_text='段内平均 margin（第一名 − 第二名显著性）≥ 该值标为「高」。')
+    melody_confidence_mid = models.FloatField(
+        '置信度「中」下限', default=0.10,
+        help_text='margin ≥ 该值标为「中」，低于它标为「低」（归属接近、需人工复核）。')
     # —— 分析窗口 ——
     analysis_window_bars = models.IntegerField(
         '显著性时间窗（小节）', default=4,

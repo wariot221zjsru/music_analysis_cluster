@@ -202,6 +202,22 @@ body {
   padding: 2px 8px; margin-left: 8px;
 }
 .qa-reask:hover { color: var(--primary); border-color: var(--primary); }
+
+/* ---------- 主旋律两张卡：口径说明 + 段级置信度 ---------- */
+.scope-note {
+  font-size: 12px; color: var(--muted); line-height: 1.7;
+  background: var(--accent-bg); border-left: 3px solid var(--primary);
+  padding: 6px 10px; border-radius: 4px; margin-bottom: 8px;
+}
+.scope-note b { color: var(--text); }
+.tag-voice {
+  background: var(--accent-bg); color: var(--primary);
+  font-size: 11px; padding: 0 5px; border-radius: 4px;
+}
+.conf { font-size: 12px; white-space: nowrap; }
+.conf-high { color: var(--done); font-weight: 600; }
+.conf-mid { color: var(--running); }
+.conf-low { color: var(--error); }
 .llm-box.llm-failed { border-left-color: var(--error); }
 .alert-warn {
   background: #fff8e6; border: 1px solid #f2d98d; color: #7a5b00;

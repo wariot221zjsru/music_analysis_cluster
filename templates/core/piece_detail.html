@@ -85,7 +85,7 @@
   </div>
 </div>
 
-{# ============ 三个分析按钮（节奏 / 旋律 / 主旋律提取并列） ============ #}
+{# ====== 分析按钮（节奏 / 旋律 / 主旋律声部识别 / 主旋律线追踪） ====== #}
 {% if can_edit %}
 <div class="action-bar card">
   <div class="action-group">
@@ -102,9 +102,15 @@
   </div>
   <div class="action-group">
     <button class="btn btn-outline" data-group="extraction" onclick="runGroup(this)">
-      🎯 主旋律提取
+      🎯 主旋律声部识别（选轨）
     </button>
-    <span class="action-hint">与旋律分析并列（可选输出：MIDI / MusicXML 导出）</span>
+    <span class="action-hint">旧口径：先判交接再选轨，与旋律分析并列（MIDI / MusicXML 导出）</span>
+  </div>
+  <div class="action-group">
+    <button class="btn btn-outline" data-group="line" onclick="runGroup(this)">
+      🎼 主旋律线追踪（逐段）
+    </button>
+    <span class="action-hint">MIR 口径：人声优先 + 显著性逐段定归属，前奏 / 间奏同样提取</span>
   </div>
   {% if convert_status != 'done' %}
   <div class="action-group">
@@ -140,12 +146,13 @@ const STEP_LABELS = {
   exchange: '⑥ 主旋律交接检测',
   chords: '⑦ 和弦进行分析',
   tonality: '⑧ 调性布局分析',
-  melody_extraction: '⑨ 主旋律提取（可选）',
-  melody_shape: '⑩ 旋律形态分析',
+  melody_extraction: '⑨ 主旋律声部识别（选轨）',
+  melody_line: '⑩ 主旋律线追踪（逐段）',
+  melody_shape: '⑪ 旋律形态分析',
 };
 const STEP_ORDER = ['convert', 'rhythm_grid', 'rhythm_pattern', 'instrumentation',
   'voice_id', 'polyphony', 'exchange', 'chords', 'tonality',
-  'melody_extraction', 'melody_shape'];
+  'melody_extraction', 'melody_line', 'melody_shape'];
 let polling = null;
 let reloadAfterConvert = false;
 const CAN_EDIT = {{ can_edit|yesno:'true,false' }};
@@ -476,8 +483,65 @@ const RENDERERS = {
         <a class="tag tag-link" href="/media/${o.exports.midi}">主旋律 MIDI ⬇</a>
         <a class="tag tag-link" href="/media/${o.exports.musicxml}">主旋律 MusicXML ⬇</a></div>`;
     }
-    return `<div class="kv"><b>模式：</b><span class="highlight">${o.mode}</span></div>` +
+    return `<p class="scope-note">口径：<b>选轨</b>——回答"整曲哪个声部是主旋律"。
+      先按阈值判定是否为主旋律交接，是才允许按归属时间线换声部；未判定为交接时
+      全曲只选一个声部（<b>器乐前奏 / 间奏可能因此不计入</b>）。
+      逐段口径见下一张卡「主旋律线追踪（逐段）」。</p>` +
+      `<div class="kv"><b>模式：</b><span class="highlight">${o.mode}</span></div>` +
       tableFrom(rows, ['候选声部', '置信度']) + exports;
+  },
+  melody_line(o) {
+    const segs = o.segments || [];
+    const cov = o.coverage || {};
+    const rows = segs.map(s => [
+      `${s.start_measure}–${s.end_measure}`,
+      `${s.bars}`,
+      `${escapeHtml(s.part_name)}${s.is_voice ? ' <span class="tag tag-voice">人声</span>' : ''}`,
+      s.note_count,
+      `<span class="conf conf-${s.level === '高' ? 'high' : (s.level === '中' ? 'mid' : 'low')}"
+        title="margin ${s.margin}">${s.level}（${(s.confidence * 100).toFixed(0)}%）</span>`,
+    ]);
+    let exports = '';
+    const ex = o.exports || {};
+    if (ex.absolute && ex.absolute.midi) {
+      exports = `<div class="kv"><b>导出：</b>
+        <a class="tag tag-link" href="/media/${ex.absolute.midi}">原位 MIDI ⬇</a>
+        <a class="tag tag-link" href="/media/${ex.absolute.musicxml}">原位 MusicXML ⬇</a>
+        <a class="tag tag-link" href="/media/${ex.spliced.midi}">无缝拼接 MIDI ⬇</a>
+        <a class="tag tag-link" href="/media/${ex.spliced.musicxml}">无缝拼接 MusicXML ⬇</a></div>
+        <p class="muted small">原位版各段留在真实小节位置（人声没唱的地方留白）；
+        拼接版首尾相接，适合当一条旋律线听 / 导入 DAW。</p>`;
+    }
+    const winRows = (o.windows || []).map(w => [
+      `${w.start_measure}–${w.end_measure}`,
+      escapeHtml(w.part_name),
+      w.voice_sounding ? '在唱' : '休止',
+      w.margin,
+    ]);
+    return `<p class="scope-note">口径：<b>逐段追踪</b>（MIR 旋律线）——
+      回答"每一段主旋律在哪个声部"。<b>不受交接检测门控</b>：
+      人声在唱归人声，人声休止的前奏 / 间奏 / 尾奏取该段最突出的器乐声部。
+      方法：${escapeHtml(o.method || '')}</p>` +
+      `<div class="kv"><b>模式：</b><span class="highlight">${o.mode}</span>`
+      + `　<b>时间窗：</b>${o.window_bars} 小节`
+      + `　<b>人声优先：</b>${o.voice_priority ? '开' : '关'}</div>` +
+      (o.has_voice_parts
+        ? `<div class="kv"><b>人声声部：</b>${(o.voice_parts || [])
+            .map(p => escapeHtml(p.name)).join('、')}</div>`
+        : '<div class="kv muted"><b>本作品无人声声部</b>，全程按显著性选轨。</div>') +
+      (segs.length ? tableFrom(rows, ['小节', '长度', '归属声部', '音符数', '置信度'])
+        : '<p class="muted small">没有可追踪的段落。</p>') +
+      (cov.ratio !== undefined
+        ? `<div class="kv"><b>覆盖：</b>${cov.covered_bars}/${cov.total_bars} 小节`
+          + `（${(cov.ratio * 100).toFixed(1)}%）`
+          + (cov.gap_bars ? `　未覆盖 ${cov.gap_bars} 小节（整窗静默）` : '') + '</div>'
+        : '') + exports +
+      (o.export_error ? `<div class="alert alert-warn">导出失败：${escapeHtml(o.export_error)}</div>` : '') +
+      (o.note ? `<p class="muted small">${escapeHtml(o.note)}</p>` : '') +
+      (winRows.length ? `<details class="melody-detail">
+        <summary>窗级归属明细（${winRows.length} 个窗）</summary>
+        ${tableFrom(winRows, ['窗（小节）', '归属声部', '人声', 'margin'])}
+        </details>` : '');
   },
   melody_shape(o) {
     return `<div class="kv"><b>分支：</b><span class="highlight">${o.branch}</span></div>` +

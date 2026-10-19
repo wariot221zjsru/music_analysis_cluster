@@ -59,9 +59,18 @@ def _brief(key: str, out: dict) -> dict:
                     (a.get('llm_analysis') or {}).get('contour_summary')
                     for a in (out.get('analyses') or [])][:4]}
     if key == 'melody_extraction':
-        return {'提取模式': out.get('mode'),
+        return {'选轨模式': out.get('mode'),
                 '候选声部': [(c['part_name'], c['confidence'])
                           for c in (out.get('candidates') or [])][:5]}
+    if key == 'melody_line':
+        return {
+            '逐段追踪模式': out.get('mode'),
+            '分段': [{'小节': f"{s['start_measure']}-{s['end_measure']}",
+                    '声部': s.get('part_name'), '人声': s.get('is_voice'),
+                    '置信度': s.get('confidence')}
+                   for s in (out.get('segments') or [])][:12],
+            '覆盖率': (out.get('coverage') or {}).get('ratio'),
+        }
     if key == 'structure':
         f = out.get('form') or {}
         return {'曲式': f.get('name'), '骨架': f.get('scheme'),
@@ -90,7 +99,8 @@ CONTEXT_STEPS = [
     ('instrumentation', '配器'), ('voice_id', '声部'),
     ('polyphony', '复调'), ('exchange', '主旋律交接'),
     ('chords', '和弦'), ('tonality', '调性'),
-    ('melody_shape', '旋律形态'), ('melody_extraction', '主旋律提取'),
+    ('melody_shape', '旋律形态'), ('melody_extraction', '主旋律声部识别（选轨）'),
+    ('melody_line', '主旋律线追踪（逐段）'),
     ('structure', '结构'), ('texture', '织体'), ('style', '风格'),
 ]
 

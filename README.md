@@ -54,11 +54,15 @@ python manage.py runserver
    - 「分析节奏」→ 节奏网格与速度曲线 + 节奏型与律动分析
    - 「分析旋律」→ 配器（静态）→ 声部识别 → 复调检测 → 主旋律交接检测
      → 和弦进行 → 调性布局 → 旋律形态分析（依赖自动补齐，缺啥跑啥）
-   - 「主旋律提取」→ 与旋律分析**并列**（可选输出；单声 → 唯一主旋律导出；
+   - 「主旋律声部识别（选轨）」→ 与旋律分析**并列**（可选输出；单声 → 唯一主旋律导出；
      复调 → 多候选 + 置信度；交接 → 归属时间线 + 拼接导出 MIDI/MusicXML）
+   - 「主旋律线追踪（逐段）」→ **MIR 旋律线口径**，与上一张卡并列且独立：
+     人声在唱归人声，人声休止的前奏 / 间奏 / 尾奏取该段最突出的器乐声部，
+     **不受"是否交接"门控**，两种导出（原位 / 无缝拼接）
 3. **结果**：每个步骤一张状态卡，运行中自动轮询刷新；失败显示完整错误。
 4. **系统设置（管理员）**：复调阈值、交接最少切换次数、动机相似度阈值、
-   分析窗口、和弦聚合窗口、dsh profile / 超时，全部前端可调。
+   主旋律线（人声优先 / 分段最小长度 / 置信度阈值）、分析窗口、和弦聚合窗口、
+   dsh profile / 超时，全部前端可调。
 
 ## 二·五、文件存储策略
 
@@ -87,7 +91,8 @@ python manage.py runserver
         instrumentation(静态,零LLM) → voice_id(角色+显著性+归属时间线)
           → polyphony(阈值可调) / exchange(切换+动机相似度)
         chords(窗口聚合+chord_identify) → tonality(KS候选+LLM转调点)
-        melody_extraction(并列/可选) / melody_shape(三分支:单声/per-voice/时间线)
+        melody_extraction(声部识别/选轨,并列可选) → melody_line(主旋律线追踪,逐段MIR)
+        melody_shape(三分支:单声/per-voice/时间线)
       → [LLM] dsh --profile headless（dsh-musictheory 提供确定性乐理计算）
 ```
 
@@ -105,7 +110,8 @@ python manage.py runserver
 | 声部识别（显著性/时间线/密度） | `core/analysis/voice_id.py` |
 | 复调 + 主旋律交接检测 | `core/analysis/voice_branches.py` |
 | 和弦 / 调性 | `core/analysis/chords.py` / `tonality.py` |
-| 主旋律提取 / 旋律形态 | `core/analysis/melody.py` |
+| 主旋律声部识别（选轨）/ 旋律形态 | `core/analysis/melody.py` |
+| 主旋律线追踪（逐段，MIR） | `core/analysis/melody_line.py` |
 | 流水线编排（依赖/线程） | `core/analysis/pipeline.py` |
 
 ## 四、MuScriptor 转录接口怎么接
