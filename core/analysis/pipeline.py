@@ -5,6 +5,12 @@
   「分析旋律」     → instrumentation → voice_id → polyphony → exchange
                     → chords → tonality → melody_shape（依赖自动补齐）
   「主旋律提取」   → melody_extraction（与旋律分析并列；依赖自动补齐）
+
+更高层三问（/pieces/<id>/sts/ 页面，三个卡片可分别单独点击）：
+  「音乐结构」 → structure ← rhythm_grid + chords + tonality
+  「织体」     → texture   ← instrumentation + voice_id + polyphony + rhythm_grid
+  「风格」     → style     ← structure + texture + tonality + rhythm_pattern
+                             + instrumentation + chords + rhythm_grid
 """
 import logging
 import threading
@@ -13,11 +19,15 @@ from django.utils import timezone
 
 from django.db import close_old_connections, connection
 
-from ..models import AnalysisResult, Piece, SystemConfig
+from ..models import AnalysisResult, AnalysisRun, Piece, QAQuestion, SystemConfig
 from . import chords as chords_mod
 from . import instrumentation as instr_mod
 from . import melody as melody_mod
+from . import qa as qa_mod
 from . import rhythm as rhythm_mod
+from . import style as style_mod
+from . import structure as structure_mod
+from . import texture as texture_mod
 from . import tonality as tonality_mod
 from . import voice_branches
 from . import voice_id as voice_mod
@@ -31,10 +41,16 @@ CANONICAL_ORDER = [
     'instrumentation', 'voice_id', 'polyphony', 'exchange',
     'chords', 'tonality',
     'melody_extraction', 'melody_shape',
+    'structure', 'texture', 'style',
 ]
 
 # 步骤依赖（缺失的依赖会自动补跑）
 STEP_DEPS = {
+    # —— 更高层三问（结构 / 织体 / 风格）——
+    'structure': ['rhythm_grid', 'chords', 'tonality'],
+    'texture': ['instrumentation', 'voice_id', 'polyphony', 'rhythm_grid'],
+    'style': ['structure', 'texture', 'tonality', 'rhythm_pattern',
+              'instrumentation', 'chords', 'rhythm_grid'],
     'rhythm_grid': [],
     'rhythm_pattern': ['rhythm_grid'],
     'instrumentation': [],
@@ -54,6 +70,8 @@ GROUPS = {
     'melody': ['instrumentation', 'voice_id', 'polyphony', 'exchange',
                'chords', 'tonality', 'melody_shape'],
     'extraction': ['melody_extraction'],
+    # 结构 / 织体 / 风格：一键全跑（页面默认让三者分开点击）
+    'sts': ['structure', 'texture', 'style'],
 }
 
 STEP_LABELS = {value: label for value, label in AnalysisResult.Step.choices}
@@ -93,7 +111,13 @@ class _Ctx:
         return self.score
 
 
-def _set_result(piece, step, status, output=None, error=None):
+def _set_result(piece, step, status, output=None, error=None,
+                trigger='', archive=True):
+    """写入 / 更新单步结果。
+
+    archive=True 时，每次以 done / error 收尾都会往 AnalysisRun 归档一份快照
+    （seq 自增），这样重跑之后上一次的输出仍然查得到。
+    """
     obj, _ = AnalysisResult.objects.get_or_create(piece=piece, step=step)
     obj.status = status
     obj.output = output
@@ -104,6 +128,19 @@ def _set_result(piece, step, status, output=None, error=None):
     elif status in ('done', 'error'):
         obj.finished_at = timezone.now()
     obj.save()
+    if archive and status in ('done', 'error'):
+        _archive_run(obj, trigger)
+
+
+def _archive_run(obj: AnalysisResult, trigger: str = ''):
+    """把一次运行的结果快照写入历史表（seq = 该步骤已有次数 + 1）。"""
+    last = (AnalysisRun.objects.filter(piece=obj.piece, step=obj.step)
+            .order_by('-seq').first())
+    seq = (last.seq + 1) if last else 1
+    AnalysisRun.objects.create(
+        piece=obj.piece, step=obj.step, seq=seq, status=obj.status,
+        output=obj.output, error=obj.error, trigger=trigger,
+        started_at=obj.started_at, finished_at=obj.finished_at)
 
 
 def _run_one_step(ctx: _Ctx, step: str):
@@ -136,10 +173,25 @@ def _run_one_step(ctx: _Ctx, step: str):
         return melody_mod.melody_shape(
             data, cfg, ctx.outputs['voice_id'], ctx.outputs['polyphony'],
             ctx.outputs['exchange'])
+    if step == 'structure':
+        return structure_mod.structure(data, cfg, ctx.outputs['rhythm_grid'],
+                                       ctx.outputs['chords'],
+                                       ctx.outputs['tonality'])
+    if step == 'texture':
+        return texture_mod.texture(data, cfg, ctx.outputs['instrumentation'],
+                                   ctx.outputs['voice_id'],
+                                   ctx.outputs['polyphony'],
+                                   ctx.outputs['rhythm_grid'])
+    if step == 'style':
+        return style_mod.style(
+            data, cfg, ctx.outputs['structure'], ctx.outputs['texture'],
+            ctx.outputs['tonality'], ctx.outputs['rhythm_pattern'],
+            ctx.outputs['instrumentation'], ctx.outputs['chords'],
+            ctx.outputs['rhythm_grid'])
     raise ValueError(f'未知步骤：{step}')
 
 
-def _run_steps(piece_id: int, steps: list):
+def _run_steps(piece_id: int, steps: list, trigger: str = ''):
     """后台线程主体：顺序执行步骤，失败即停（后续步骤依赖前者）。"""
     close_old_connections()
     piece = Piece.objects.filter(pk=piece_id).first()
@@ -155,20 +207,22 @@ def _run_steps(piece_id: int, steps: list):
     try:
         executed = set()
         for step in steps:
-            _set_result(piece, step, 'running')
+            _set_result(piece, step, 'running', trigger=trigger)
             executed.add(step)
             try:
                 output = _run_one_step(ctx, step)
                 ctx.outputs[step] = output
-                _set_result(piece, step, 'done', output=output)
+                _set_result(piece, step, 'done', output=output, trigger=trigger)
             except Exception as exc:  # noqa: BLE001
                 logger.exception('步骤 %s 失败', step)
-                _set_result(piece, step, 'error',
+                _set_result(piece, step, 'error', trigger=trigger,
                             error=f'{exc}\n---\n{traceback.format_exc()[-1500:]}')
                 # 后续步骤不再执行：把残留的 pending 标记为明确失败
+                # （没真正跑过，不进历史，避免污染记录）
                 for rest in steps:
                     if rest not in executed:
-                        _set_result(piece, rest, 'error',
+                        _set_result(piece, rest, 'error', archive=False,
+                                    trigger=trigger,
                                     error='未执行：前置步骤失败，请重跑本组。')
                 break
     finally:
@@ -176,30 +230,30 @@ def _run_steps(piece_id: int, steps: list):
             connection.close()
 
 
-def _run_convert(piece_id: int):
+def _run_convert(piece_id: int, trigger: str = 'convert'):
     """后台线程：上传后的格式转换。"""
     close_old_connections()
     piece = Piece.objects.filter(pk=piece_id).first()
     if piece is None:
         return
     from ..converters.musicxml import convert_piece
-    _set_result(piece, 'convert', 'running')
+    _set_result(piece, 'convert', 'running', trigger=trigger)
     try:
         output = convert_piece(piece)
-        _set_result(piece, 'convert', 'done', output=output)
+        _set_result(piece, 'convert', 'done', output=output, trigger=trigger)
     except NotImplementedError as exc:
-        _set_result(piece, 'convert', 'error', error=str(exc))
+        _set_result(piece, 'convert', 'error', error=str(exc), trigger=trigger)
     except Exception as exc:  # noqa: BLE001
         logger.exception('格式转换失败')
-        _set_result(piece, 'convert', 'error',
+        _set_result(piece, 'convert', 'error', trigger=trigger,
                     error=f'{exc}\n---\n{traceback.format_exc()[-1500:]}')
     finally:
         if connection.connection is not None:
             connection.close()
 
 
-def start_convert_async(piece: Piece):
-    threading.Thread(target=_run_convert, args=(piece.id,),
+def start_convert_async(piece: Piece, trigger: str = 'convert'):
+    threading.Thread(target=_run_convert, args=(piece.id, trigger),
                      daemon=True, name=f'convert-{piece.id}').start()
 
 
@@ -216,8 +270,100 @@ def start_steps_async(piece: Piece, group: str, force: bool = False):
     if not steps:
         return []
     # 占位 pending（前端立即能看到将执行的步骤）
+    trigger = f'group:{group}'
     for step in steps:
-        _set_result(piece, step, 'pending')
-    threading.Thread(target=_run_steps, args=(piece.id, steps),
+        _set_result(piece, step, 'pending', trigger=trigger)
+    threading.Thread(target=_run_steps, args=(piece.id, steps, trigger),
                      daemon=True, name=f'analyze-{piece.id}-{group}').start()
     return steps
+
+
+def start_step_async(piece: Piece, step: str, with_deps: bool = True):
+    """重新执行**单个步骤**（每模块右上角的 ⟲ 按钮）。
+
+    与 start_steps_async 的区别：
+      - 目标 step **必定重跑**（先清掉它的旧结果）；
+      - 依赖若已完成则**复用**，未完成才自动补跑（with_deps=False 时完全不补）。
+
+    价值：melody_shape 这类末端步骤失败时，不必连带重跑耗时 8 分钟的 chords。
+    """
+    if step not in STEP_DEPS:
+        raise ValueError(f'未知步骤：{step}')
+
+    done = set(AnalysisResult.objects.filter(piece=piece, status='done')
+               .values_list('step', flat=True))
+    # 目标步骤自身强制重跑
+    AnalysisResult.objects.filter(piece=piece, step=step).delete()
+    done.discard(step)
+
+    needed = {step}
+    if with_deps:
+        changed = True
+        while changed:      # 依赖闭包
+            changed = False
+            for s in list(needed):
+                for dep in STEP_DEPS.get(s, []):
+                    if dep not in needed:
+                        needed.add(dep)
+                        changed = True
+
+    # 已完成的依赖不重跑；未完成的依赖必须补跑
+    run = {s for s in needed if s == step or s not in done}
+    steps = [s for s in CANONICAL_ORDER if s in run]
+    if not steps:
+        return []
+    trigger = f'rerun:{step}'
+    for s in steps:
+        _set_result(piece, s, 'pending', trigger=trigger)
+    threading.Thread(target=_run_steps, args=(piece.id, steps, trigger),
+                     daemon=True, name=f'rerun-{piece.id}-{step}').start()
+    return steps
+
+
+# ---------------- 自定义问答（异步） ----------------
+
+def _run_question(qa_id: int):
+    """后台线程：基于已完成的分析回答一次用户提问。
+
+    问答不重新分析：只把已完成步骤的结论压缩进上下文，
+    没跑过的方面在上下文中记为"尚无数据"，模型不得臆断。
+    """
+    close_old_connections()
+    item = QAQuestion.objects.filter(pk=qa_id).first()
+    if item is None:
+        return
+    try:
+        piece = item.piece
+        config = SystemConfig.get_config()
+        results = {r.step: r.output
+                   for r in AnalysisResult.objects.filter(piece=piece,
+                                                          status='done')}
+        data = None
+        if piece.musicxml_file:
+            try:
+                data = parse_score(piece.musicxml_file.path)
+            except Exception:  # noqa: BLE001
+                data = None      # 谱面读不出也照样能答，只是少了旋律片段
+        ctx = qa_mod.build_context(piece, data, results)
+        item.answer = qa_mod.answer(item.question, ctx, config)
+        item.details = ctx
+        item.status = 'done'
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('问答失败')
+        item.answer = ''
+        item.status = 'error'
+        item.error = str(exc)
+    finally:
+        item.finished_at = timezone.now()
+        item.save()
+        if connection.connection is not None:
+            connection.close()
+
+
+def start_question_async(piece: Piece, user, question: str) -> int:
+    """登记一次提问并起后台线程回答。返回提问 id。"""
+    item = QAQuestion.objects.create(piece=piece, user=user, question=question,
+                                     status='running')
+    threading.Thread(target=_run_question, args=(item.id,),
+                     daemon=True, name=f'qa-{item.id}').start()
+    return item.id

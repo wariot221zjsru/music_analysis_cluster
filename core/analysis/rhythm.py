@@ -3,7 +3,7 @@
 rhythm_grid：拍号 / 小节 / 速度 —— 纯本地元数据解析（时间网格是地基）。
 rhythm_pattern：节奏型统计 + 律动特征 + LLM 描述性总结。
 """
-from .llm import run_llm_json, JSON_ONLY
+from .llm import run_llm_json_soft, JSON_ONLY
 from .scoredata import ScoreData
 
 
@@ -22,6 +22,7 @@ def rhythm_grid(data: ScoreData, config) -> dict:
         'part_count': len(data.parts),
         'notes': [
             {'part': p.name, 'instrument': p.instrument,
+             'is_percussion': p.is_percussion,
              'note_count': p.note_count, 'total_duration': round(p.total_duration, 3)}
             for p in data.parts
         ],
@@ -76,7 +77,9 @@ def rhythm_pattern(data: ScoreData, config) -> dict:
         'total_note_events': len(all_events),
     }
 
-    # 4) LLM 律动总结（要求模型用工具箱验证时值换算）
+    # LLM 律动总结（要求模型用工具箱验证时值换算）
+    # 注意：保持 reasoningEffort=high 时思考 tokens 与正文共用额度，
+    # 长回答极易被截断 → 走软降级，解析失败也不让本步骤报错。
     task = (
         '你是专业节奏分析师，可以使用音乐理论工具箱（note_info 等）核验时值换算。'
         '以下是一首乐曲的节奏统计特征（JSON）：\n'
@@ -89,6 +92,7 @@ def rhythm_pattern(data: ScoreData, config) -> dict:
         '"description": "2-4 句整体节奏小结"}'
         f'{JSON_ONLY}'
     )
-    llm = run_llm_json(task, profile=config.dsh_profile, timeout=config.dsh_timeout)
+    llm = run_llm_json_soft(task, profile=config.dsh_profile,
+                            timeout=config.dsh_timeout, retries=1)
 
     return {'stats': stats, 'llm_analysis': llm}

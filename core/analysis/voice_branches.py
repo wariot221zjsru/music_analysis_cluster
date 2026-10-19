@@ -5,7 +5,9 @@
 在不同声部间切换（"接力响"）。二者判定逻辑不同、可同时存在。
 阈值均来自 SystemConfig（管理员前端可调）。
 """
-from .scoredata import ScoreData, build_measure_map, interval_seq, lcs_ratio
+from .scoredata import (
+    ScoreData, build_measure_map, interval_seq, lcs_ratio, pitched_parts,
+)
 
 
 def polyphony(data: ScoreData, config, voice_out: dict) -> dict:
@@ -24,7 +26,9 @@ def polyphony(data: ScoreData, config, voice_out: dict) -> dict:
         'threshold': threshold,
         'per_part': dens['per_part'],
         'polyphonic_parts': [int(i) for i, f in per_part_flag.items() if f],
-        'branch': '复调' if is_poly else ('单声' if len(data.parts) == 1 else '主调'),
+        # "单声"看的是有音高的声部数（打击乐不算独立声部）
+        'branch': '复调' if is_poly
+        else ('单声' if len(pitched_parts(data)) <= 1 else '主调'),
         'confidence': round(min(dens['ratio'] / threshold, 2.0)
                             if is_poly else max(0.0, 1 - dens['ratio'] / max(threshold, 1e-6)), 4),
     }
@@ -34,7 +38,7 @@ def _segment_pitch_seq(data: ScoreData, part_index: int, start_m: int, end_m: in
     measure_offsets, _, _ = build_measure_map(data)
     s = measure_offsets.get(start_m, 0.0)
     e = measure_offsets.get(end_m + 1, s + (end_m - start_m + 1) * 4.0)
-    return [max(ev.midi_pitches) for ev in data.parts[part_index].events
+    return [max(ev.midi_pitches) for ev in data.parts[part_index].pitched_events
             if s <= ev.offset < e]
 
 

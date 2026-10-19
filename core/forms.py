@@ -10,7 +10,8 @@ class UploadForm(forms.Form):
                                   widget=forms.ClearableFileInput(
                                       attrs={'class': 'input'}))
     contains_voice = forms.BooleanField(
-        label='音频含人声（MuScriptor 将走"器乐+人声"两遍转录管线）',
+        label='音频含人声（仅音频上传时用于选择 MuScriptor 转录管线；'
+              '上传 MIDI / MusicXML 时以文件内实际声部为准）',
         required=False)
     is_public = forms.BooleanField(
         label='公开该作品（其他登录用户可查看其分析结果）',

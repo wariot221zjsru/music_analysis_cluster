@@ -7,6 +7,11 @@
     tonality ← chords
     melody_extraction（可选、并列）← voice_id + polyphony + exchange
     melody_shape ← rhythm_grid + voice_id + polyphony + exchange + chords + tonality
+
+更高层三问（新页 /pieces/<id>/sts/）：
+    structure ← rhythm_grid + chords + tonality
+    texture   ← instrumentation + voice_id + polyphony + rhythm_grid
+    style     ← structure + texture + tonality + rhythm_pattern + instrumentation
 """
 from django.conf import settings
 from django.db import models
@@ -28,8 +33,11 @@ class Piece(models.Model):
         help_text='原始音频仅作临时存放，转换成功后自动删除，不做长期保存')
     source_type = models.CharField('源类型', max_length=16,
                                    choices=SourceType.choices)
-    contains_voice = models.BooleanField('是否含人声', default=False,
-                                         help_text='含人声时 MuScriptor 走"器乐+人声"两遍转录管线')
+    contains_voice = models.BooleanField(
+        '是否含人声', default=False,
+        help_text='唯一事实来源是作品文件本身：MIDI / MusicXML 上传后按文件里的实际'
+                  '声部自动回写（覆盖上传时的勾选）；音频上传按 MuScriptor 转录结果'
+                  '回写。上传页的勾选只对音频转录管线的选择起作用。')
     is_public = models.BooleanField(
         '公开', default=False,
         help_text='公开后其他登录用户也可查看该作品及其分析结果（不可代为运行分析）')
@@ -72,8 +80,11 @@ class AnalysisResult(models.Model):
         EXCHANGE = 'exchange', '主旋律交接检测'
         CHORDS = 'chords', '和弦进行分析'
         TONALITY = 'tonality', '调性布局分析'
-        MELODY_EXTRACTION = 'melody_extraction', '主旋律提取（可选输出）'
-        MELODY_SHAPE = 'melody_shape', '旋律形态分析'
+    MELODY_EXTRACTION = 'melody_extraction', '主旋律提取（可选输出）'
+    MELODY_SHAPE = 'melody_shape', '旋律形态分析'
+    STRUCTURE = 'structure', '音乐结构分析（乐句 / 乐段 / 曲式）'
+    TEXTURE = 'texture', '织体分析'
+    STYLE = 'style', '风格分析'
 
     class Status(models.TextChoices):
         PENDING = 'pending', '等待中'
@@ -98,6 +109,76 @@ class AnalysisResult(models.Model):
 
     def __str__(self):
         return f'{self.piece.title} · {self.get_step_display()} · {self.get_status_display()}'
+
+
+class AnalysisRun(models.Model):
+    """一次分析运行的归档快照（历史记录）。
+
+    AnalysisResult 每个 (piece, step) 只有一行、重跑即覆盖；
+    本表把**每一次**执行（done / error）都留一份，供回看与前后对比。
+    重跑、换参数、LLM 抽风重来之后，上一次的结果都能在这里找回来。
+    """
+
+    piece = models.ForeignKey(Piece, on_delete=models.CASCADE,
+                              related_name='runs', verbose_name='作品')
+    step = models.CharField('步骤', max_length=32,
+                            choices=AnalysisResult.Step.choices)
+    seq = models.PositiveIntegerField('第几次运行', default=1)
+    status = models.CharField('状态', max_length=16,
+                              choices=AnalysisResult.Status.choices)
+    output = models.JSONField('输出', null=True, blank=True)
+    error = models.TextField('错误信息', blank=True)
+    trigger = models.CharField(
+        '触发方式', max_length=32, blank=True,
+        help_text='convert / group:melody / rerun:chords 等，用于区分是谁发起的')
+    started_at = models.DateTimeField('开始时间', null=True, blank=True)
+    finished_at = models.DateTimeField('结束时间', null=True, blank=True)
+    archived_at = models.DateTimeField('归档时间', auto_now_add=True)
+
+    class Meta:
+        ordering = ['step', '-seq']
+        unique_together = [('piece', 'step', 'seq')]
+        verbose_name = '运行历史'
+        verbose_name_plural = '运行历史'
+
+    def __str__(self):
+        return f'{self.piece.title} · {self.get_step_display()} · 第 {self.seq} 次'
+
+
+class QAQuestion(models.Model):
+    """用户对某部作品的自定义提问（异步交给 dsh 回答）。
+
+    与分析结果分开存放：分析步骤是 (piece, step) 唯一、结果会被覆盖，
+    而问答是历史流——同一作品可以反复追问，旧记录必须保留。
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', '等待中'
+        RUNNING = 'running', '运行中'
+        DONE = 'done', '已完成'
+        ERROR = 'error', '失败'
+
+    piece = models.ForeignKey(Piece, on_delete=models.CASCADE,
+                              related_name='questions', verbose_name='作品')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name='music_questions', verbose_name='提问人')
+    question = models.TextField('问题')
+    answer = models.TextField('回答', blank=True)
+    details = models.JSONField('结构化回答', null=True, blank=True,
+                               help_text='模型返回的 JSON（答案 / 依据 / 提醒）')
+    status = models.CharField('状态', max_length=16, choices=Status.choices,
+                              default=Status.PENDING)
+    error = models.TextField('错误信息', blank=True)
+    created_at = models.DateTimeField('提问时间', auto_now_add=True)
+    finished_at = models.DateTimeField('完成时间', null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '自定义提问'
+        verbose_name_plural = '自定义提问'
+
+    def __str__(self):
+        return f'{self.piece.title} · {self.question[:30]}'
 
 
 class SystemConfig(models.Model):

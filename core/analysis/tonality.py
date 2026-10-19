@@ -4,7 +4,7 @@
 本地 Krumhansl-Schmuckler 音级时值统计给出每段候选调，
 LLM 结合和弦进行确定主调、调性区域与转调点。
 """
-from .llm import run_llm_json, JSON_ONLY
+from .llm import run_llm_json_soft, JSON_ONLY
 from .scoredata import ScoreData, ks_key_candidates, midi_to_pc
 
 _SECTION_BARS = 8  # KS 统计分段长度（小节）
@@ -18,7 +18,7 @@ def tonality(data: ScoreData, config, chords_out: dict, voice_out: dict) -> dict
         end = min(start + _SECTION_BARS - 1, data.measure_count)
         pc_duration = [0.0] * 12
         for p in data.parts:
-            for e in p.events:
+            for e in p.pitched_events:
                 if start <= e.measure <= end:
                     for pitch in e.midi_pitches:
                         pc_duration[midi_to_pc(pitch)] += e.duration
@@ -50,7 +50,8 @@ def tonality(data: ScoreData, config, chords_out: dict, voice_out: dict) -> dict
         '"confidence": 0~1, "description": "2-3 句调性布局小结"}'
         f'{JSON_ONLY}'
     )
-    llm = run_llm_json(task, profile=config.dsh_profile, timeout=config.dsh_timeout)
+    llm = run_llm_json_soft(task, profile=config.dsh_profile,
+                            timeout=config.dsh_timeout, retries=1)
     if not isinstance(llm, dict):
         llm = {'main_key': None, 'description': str(llm)}
 
@@ -61,4 +62,7 @@ def tonality(data: ScoreData, config, chords_out: dict, voice_out: dict) -> dict
         'confidence': llm.get('confidence'),
         'description': llm.get('description', ''),
         'ks_sections': sections,
+        # 解析失败时保留诊断信息（步骤不报错，前端提示重跑本步骤）
+        'llm_error': llm.get('_error', ''),
+        'llm_raw_text': llm.get('_raw_text', ''),
     }

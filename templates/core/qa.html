@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+{% block title %}{{ piece.title }} · 自定义问答{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>自定义问答</h1>
+  <div class="piece-meta">
+    <span class="tag">{{ piece.title }}</span>
+    <a class="tag tag-link" href="{% url 'core:piece_detail' piece.id %}">← 返回分析主页</a>
+    <a class="tag tag-link" href="{% url 'core:sts_page' piece.id %}">结构 / 织体 / 风格</a>
+  </div>
+</div>
+
+{% if can_edit %}
+{% if convert_done %}
+<div class="card qa-form-card">
+  <form id="qa-form" autocomplete="off">
+    <label class="field-label" for="q-input">向 AI 提问关于这部作品的任何问题</label>
+    <textarea class="input qa-input" id="q-input" rows="3" maxlength="500"
+      placeholder="例：第 17-24 小节为什么听起来紧张？和声在这里做了什么？"></textarea>
+    <div class="field-hint">
+      回答只引用已完成分析给出的事实；没跑过的方面模型会直接说明"现有分析不足以判断"。最长 500 字。
+    </div>
+    <button class="btn btn-primary" type="submit" id="qa-submit">💬 提问</button>
+    <span class="muted small" id="qa-tip"></span>
+  </form>
+</div>
+{% else %}
+<div class="alert alert-info">
+  格式转换尚未完成，暂不能提问。请先回到
+  <a href="{% url 'core:piece_detail' piece.id %}">分析主页</a> 等待转换结束。
+</div>
+{% endif %}
+{% else %}
+<div class="alert alert-info">
+  这是 {{ piece.owner.username }} 公开的作品，仅可查看其主人的问答记录，不能代为提问。
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="qa-history-title">
+    问答记录（历史完整保留，共 <span id="qa-total">{{ qa_total }}</span> 条）
+  </div>
+  <div id="qa-list" class="qa-list">
+    <p class="muted small">加载中…</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ qa_initial|json_script:"qa-initial" }}
+<script>
+  window.PIECE_ID = {{ piece.id }};
+  window.CSRF_TOKEN = '{{ csrf_token }}';
+  window.CAN_EDIT = {{ can_edit|yesno:'true,false' }};
+</script>
+{% load static %}
+<script src="{% static 'js/qa.js' %}"></script>
+{% endblock %}

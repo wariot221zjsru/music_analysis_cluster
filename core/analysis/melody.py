@@ -11,7 +11,7 @@ import copy
 from django.utils import timezone
 
 from .. import storage
-from .llm import run_llm_json, JSON_ONLY
+from .llm import run_llm_json_soft, JSON_ONLY
 from .scoredata import (
     ScoreData, build_measure_map, interval_seq, midi_to_name,
 )
@@ -26,7 +26,7 @@ def _export_part_as_melody(data: ScoreData, part_index: int):
     src = data.parts[part_index]
     part = stream.Part()
     part.partName = f'主旋律 · {src.name}'
-    for e in src.events:
+    for e in src.pitched_events:
         if len(e.midi_pitches) == 1:
             n = m21note.Note()
             n.pitch.midi = e.midi_pitches[0]
@@ -52,7 +52,7 @@ def _export_timeline_spliced(data: ScoreData, timeline: list):
         s = measure_offsets.get(seg['start_measure'], 0.0)
         e = measure_offsets.get(seg['end_measure'] + 1,
                                 s + (seg['end_measure'] - seg['start_measure'] + 1) * 4.0)
-        for ev in data.parts[idx].events:
+        for ev in data.parts[idx].pitched_events:
             if s <= ev.offset < e:
                 if len(ev.midi_pitches) == 1:
                     n = m21note.Note()
@@ -104,6 +104,9 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
           'confidence': round(s / n_windows, 4)}
          for idx, s in total_sal.items()),
         key=lambda d: -d['confidence'])
+    # 打击乐声部没有旋律意义，不进候选（防御：显著性矩阵理应已排除）
+    pitched_idx = {p.index for p in data.parts if p.pitched_events}
+    candidates = [c for c in candidates if c['part_index'] in pitched_idx]
 
     result = {
         'candidates': candidates,
@@ -182,7 +185,10 @@ def _llm_melody_analysis(label: str, seq: list, features: dict,
         '"highlights": "1-2 句亮点点评"}'
         f'{JSON_ONLY}'
     )
-    return run_llm_json(task, profile=config.dsh_profile, timeout=config.dsh_timeout)
+    # 软降级：保持 reasoningEffort=high 时思考 tokens 与正文共用 max_tokens 额度，
+    # 这段分析经常被截断；解析失败只降级本片段，不让整个 melody_shape 步骤变 error。
+    return run_llm_json_soft(task, profile=config.dsh_profile,
+                             timeout=config.dsh_timeout, retries=1)
 
 
 def melody_shape(data: ScoreData, config, voice_out: dict, poly_out: dict,
@@ -204,8 +210,11 @@ def melody_shape(data: ScoreData, config, voice_out: dict, poly_out: dict,
             e = measure_offsets.get(
                 seg['end_measure'] + 1,
                 s + (seg['end_measure'] - seg['start_measure'] + 1) * 4.0)
-            seq = [max(ev.midi_pitches) for ev in data.parts[seg['part_index']].events
+            seq = [max(ev.midi_pitches)
+                   for ev in data.parts[seg['part_index']].pitched_events
                    if s <= ev.offset < e]
+            if not seq:
+                continue
             label = (f"第{seg['start_measure']}-{seg['end_measure']}小节 · "
                      f"{part_names[seg['part_index']]}")
             features = _melody_features(seq)
@@ -219,7 +228,9 @@ def melody_shape(data: ScoreData, config, voice_out: dict, poly_out: dict,
                 total_sal[idx] = total_sal.get(idx, 0) + s_
         ranked = sorted(total_sal.items(), key=lambda kv: -kv[1])[:3]
         for idx, _ in ranked:
-            seq = [max(ev.midi_pitches) for ev in data.parts[int(idx)].events]
+            seq = [max(ev.midi_pitches) for ev in data.parts[int(idx)].pitched_events]
+            if not seq:
+                continue
             label = f'声部 {part_names[int(idx)]}'
             features = _melody_features(seq)
             llm = _llm_melody_analysis(label, seq, features, config)
@@ -232,11 +243,13 @@ def melody_shape(data: ScoreData, config, voice_out: dict, poly_out: dict,
                 total_sal[idx] = total_sal.get(idx, 0) + s_
         if total_sal:
             top_idx = int(max(total_sal.items(), key=lambda kv: kv[1])[0])
-            seq = [max(ev.midi_pitches) for ev in data.parts[top_idx].events]
-            label = f'主旋律声部 {part_names[top_idx]}'
-            features = _melody_features(seq)
-            llm = _llm_melody_analysis(label, seq, features, config)
-            analyses.append({'segment': label, 'features': features, 'llm_analysis': llm})
+            seq = [max(ev.midi_pitches) for ev in data.parts[top_idx].pitched_events]
+            if seq:
+                label = f'主旋律声部 {part_names[top_idx]}'
+                features = _melody_features(seq)
+                llm = _llm_melody_analysis(label, seq, features, config)
+                analyses.append({'segment': label, 'features': features,
+                                 'llm_analysis': llm})
 
     return {
         'branch': branch,

@@ -15,6 +15,10 @@
       <input type="checkbox" name="contains_voice">
       音频含人声（MuScriptor 走「器乐 + 人声」两遍转录管线）
     </label>
+    <div class="field-hint">
+      这一项只对<b>音频</b>上传起作用（决定转录管线）。上传 <b>MIDI / MusicXML</b> 时，
+      系统会按文件里自带的声部判定是否含人声，<b>不受此勾选影响</b>。
+    </div>
     <label class="checkbox-label">
       <input type="checkbox" name="is_public">
       公开该作品（其他登录用户可查看其分析结果；不勾选则仅自己可见）

@@ -4,7 +4,7 @@
   声部识别 → 按窗口聚合音高集合（节拍强弱加权）→ LLM 逐窗用
   dsh-musictheory 的 chord_identify 做确定性识别 + 功能语义标注。
 """
-from .llm import run_llm_json, JSON_ONLY
+from .llm import run_llm_json_soft, JSON_ONLY
 from .scoredata import (
     ScoreData, build_measure_map, sounding_pitches_at, midi_to_name, midi_to_pc,
 )
@@ -72,6 +72,7 @@ def chords(data: ScoreData, config, voice_out: dict) -> dict:
     windows = [w for w in windows if w['pitch_classes']]  # 丢弃空窗口（休止）
 
     results = []
+    errors = []          # 解析失败的批次（本步骤不因此整体失败）
     for chunk in _chunked(windows, config.max_chord_windows_per_call):
         payload = [
             {'label': w['label'], 'pitches': w['pitch_names'], 'bass': w['bass']}
@@ -90,11 +91,16 @@ def chords(data: ScoreData, config, voice_out: dict) -> dict:
             '"confidence": 0~1}。'
             f'{JSON_ONLY}'
         )
-        llm = run_llm_json(task, profile=config.dsh_profile, timeout=config.dsh_timeout)
+        llm = run_llm_json_soft(task, profile=config.dsh_profile,
+                                timeout=config.dsh_timeout, retries=1)
         if isinstance(llm, list):
             results.extend(llm)
-        elif isinstance(llm, dict) and 'chords' in llm:
-            results.extend(llm['chords'])
+        elif isinstance(llm, dict):
+            if 'chords' in llm:
+                results.extend(llm['chords'])
+            elif '_error' in llm:
+                # 该批次整体解析失败：记账后继续（已有 were_error 标记）
+                errors.append(llm)
 
     # 本地兜底：LLM 漏标的窗口补 null
     labels_llm = {r.get('label') for r in results}
@@ -107,6 +113,7 @@ def chords(data: ScoreData, config, voice_out: dict) -> dict:
         'window_type': config.chord_window,
         'window_count': len(windows),
         'progression': results,
+        'llm_errors': errors,
         'raw_windows': [
             {'label': w['label'], 'pitch_names': w['pitch_names'], 'bass': w['bass']}
             for w in windows

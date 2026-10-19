@@ -20,7 +20,9 @@ _INSTRUMENT_FAMILY = {
 }
 
 
-def _family(instrument: str) -> str:
+def _family(instrument: str, is_percussion: bool = False) -> str:
+    if is_percussion:
+        return '打击乐'
     low = (instrument or '').lower()
     for k, v in _INSTRUMENT_FAMILY.items():
         if k in low:
@@ -35,15 +37,20 @@ def instrumentation(data, config) -> dict:
         parts.append({
             'part_index': p.index,
             'name': p.name,
-            'instrument': p.instrument or '（未标注）',
-            'family': _family(p.instrument),
+            'instrument': p.instrument or ('打击乐（鼓组）' if p.is_percussion
+                                           else '（未标注）'),
+            'family': _family(p.instrument, p.is_percussion),
             'is_voice': p.is_voice,
+            'is_percussion': p.is_percussion,
             'note_count': p.note_count,
+            'pitched_note_count': p.pitched_note_count,
         })
     return {
         'parts': parts,
         'part_count': len(parts),
         'has_voice': any(p['is_voice'] for p in parts),
+        'has_percussion': any(p['is_percussion'] for p in parts),
         'families': sorted({p['family'] for p in parts}),
-        'note': '静态配器直接读取谱面元数据，未经大模型（零幻觉、零延迟）。',
+        'note': ('静态配器直接读取谱面元数据，未经大模型（零幻觉、零延迟）。'
+                 '打击乐声部只参与节奏统计，不参与和弦 / 调性 / 旋律等音高类分析。'),
     }

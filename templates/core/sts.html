@@ -1,0 +1,69 @@
+{% extends 'base.html' %}
+{% block title %}{{ piece.title }} · 结构 / 织体 / 风格{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>结构 · 织体 · 风格</h1>
+  <div class="piece-meta">
+    <span class="tag">{{ piece.title }}</span>
+    <a class="tag tag-link" href="{% url 'core:piece_detail' piece.id %}">← 返回分析主页</a>
+    <a class="tag tag-link" href="{% url 'core:qa_page' piece.id %}">💬 自定义问答</a>
+  </div>
+</div>
+
+{% if not convert_done %}
+<div class="alert alert-info">
+  格式转换尚未完成，三项分析暂时不能运行。请回到
+  <a href="{% url 'core:piece_detail' piece.id %}">分析主页</a> 等待转换结束。
+</div>
+{% endif %}
+
+{% if not can_edit %}
+<div class="alert alert-info">
+  这是 {{ piece.owner.username }} 公开的作品，仅可查看分析结果，不能代为运行分析。
+</div>
+{% endif %}
+
+{# 三个子窗口：竖排，每张占满页面宽度，各自独立运行 #}
+<div class="sts-list">
+  {% for item in sts_steps %}
+  <section class="card sts-card" data-step="{{ item.key }}">
+    <div class="sts-head">
+      <h2 class="sts-title">{{ item.title }}</h2>
+      <div class="sts-head-right">
+        <span class="pill" data-pill="{{ item.key }}">未运行</span>
+        <button class="step-hist-btn" data-histbtn="{{ item.key }}"
+                title="查看历史运行记录" hidden>🕘 历史</button>
+        <button class="step-rerun" data-rerun="{{ item.key }}"
+                title="重新执行本项" aria-label="重新执行{{ item.title }}"></button>
+      </div>
+    </div>
+    {% if can_edit %}
+    <div class="sts-actions">
+      {% if convert_done %}
+      <button class="btn btn-primary" data-run="{{ item.key }}">
+        ▶ <span data-run-label="{{ item.key }}">运行</span>
+      </button>
+      {% else %}
+      <span class="muted small">格式转换完成后才能运行。</span>
+      {% endif %}
+      <span class="action-hint sts-hint">{{ item.hint }}</span>
+    </div>
+    {% endif %}
+    <div class="sts-body" data-body="{{ item.key }}">
+      <p class="muted small">尚未运行。</p>
+    </div>
+    <div class="hist-slot" data-hist="{{ item.key }}"></div>
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.PIECE_ID = {{ piece.id }};
+  window.CSRF_TOKEN = '{{ csrf_token }}';
+  window.CAN_EDIT = {{ can_edit|yesno:'true,false' }};
+</script>
+{% load static %}
+<script src="{% static 'js/sts.js' %}"></script>
+{% endblock %}

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import AnalysisResult, Piece, SystemConfig
+from .models import AnalysisResult, AnalysisRun, Piece, QAQuestion, SystemConfig
 
 admin.site.site_header = '音乐分析和处理智能体 · 管理后台'
 
@@ -19,6 +19,22 @@ class AnalysisResultAdmin(admin.ModelAdmin):
     list_display = ('piece', 'step', 'status', 'started_at', 'finished_at')
     list_filter = ('step', 'status')
     search_fields = ('piece__title',)
+
+
+@admin.register(AnalysisRun)
+class AnalysisRunAdmin(admin.ModelAdmin):
+    list_display = ('piece', 'step', 'seq', 'status', 'trigger',
+                    'started_at', 'finished_at', 'archived_at')
+    list_filter = ('step', 'status')
+    search_fields = ('piece__title',)
+    readonly_fields = ('archived_at',)
+
+
+@admin.register(QAQuestion)
+class QAQuestionAdmin(admin.ModelAdmin):
+    list_display = ('piece', 'user', 'status', 'created_at', 'finished_at')
+    list_filter = ('status', 'created_at')
+    search_fields = ('piece__title', 'question', 'answer')
 
 
 @admin.register(SystemConfig)

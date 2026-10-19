@@ -5,15 +5,15 @@
   <h1>{{ piece.title }}</h1>
   <div class="piece-meta">
     <span class="tag">{{ piece.get_source_type_display }}</span>
-    <span class="tag">{{ piece.contains_voice|yesno:'含人声,纯器乐' }}</span>
+    <span class="tag" title="{{ voice_note }}">{{ piece.contains_voice|yesno:'含人声,纯器乐' }}</span>
     <span class="tag {% if piece.is_public %}tag-public{% endif %}">
       {{ piece.visibility_display }}
     </span>
     {% if piece.musicxml_file %}
-      <a class="tag tag-link" href="{{ piece.musicxml_file.url }}">MusicXML ⬇</a>
+      <a class="tag tag-link" href="{% url 'core:download_musicxml' piece.id %}" download>MusicXML ⬇</a>
     {% endif %}
     {% if piece.midi_file %}
-      <a class="tag tag-link" href="{{ piece.midi_file.url }}">MIDI ⬇</a>
+      <a class="tag tag-link" href="{% url 'core:download_midi' piece.id %}" download>MIDI ⬇</a>
     {% endif %}
     {% if can_edit %}
     <form method="post" action="/pieces/{{ piece.id }}/visibility/" class="inline">
@@ -38,6 +38,53 @@
 </div>
 {% endif %}
 
+{# ============ 转换结果下载 + 更高层分析（左右横排） ============ #}
+<div class="top-cards">
+  {% if piece.midi_file or piece.musicxml_file %}
+  <div class="card download-card">
+    <div class="download-title">转换结果下载</div>
+    <div class="download-actions">
+      {% if piece.midi_file %}
+      <a class="btn btn-outline"
+         href="{% url 'core:download_midi' piece.id %}" download>⬇ 下载 MIDI</a>
+      {% else %}
+      <span class="muted small">MIDI 尚未生成</span>
+      {% endif %}
+      {% if piece.musicxml_file %}
+      <a class="btn btn-outline"
+         href="{% url 'core:download_musicxml' piece.id %}" download>⬇ 下载 MusicXML</a>
+      {% else %}
+      <span class="muted small">MusicXML 尚未生成</span>
+      {% endif %}
+    </div>
+    <p class="muted small">
+      音频上传时原始文件只作临时存放，转换成功后即清理；以上 MIDI / MusicXML 为永久保存产物，可随时下载。
+    </p>
+  </div>
+  {% endif %}
+
+  <div class="card more-links">
+    <div class="more-title">更高层分析</div>
+    <div class="more-actions">
+      <a class="btn btn-outline" href="{% url 'core:sts_page' piece.id %}">
+        🏛 结构 / 织体 / 风格
+      </a>
+      <a class="btn btn-outline" href="{% url 'core:qa_page' piece.id %}">
+        💬 对本作品提问
+      </a>
+    </div>
+    <div class="more-status">
+      <span class="more-chip">结构 <span class="pill" data-sts="structure">未运行</span></span>
+      <span class="more-chip">织体 <span class="pill" data-sts="texture">未运行</span></span>
+      <span class="more-chip">风格 <span class="pill" data-sts="style">未运行</span></span>
+    </div>
+    <p class="muted small">
+      结构、织体、风格三项在各自页面里分开点击运行；问答只引用已完成分析给出的事实，
+      没跑过的方面会明确说明"现有分析不足以判断"。
+    </p>
+  </div>
+</div>
+
 {# ============ 三个分析按钮（节奏 / 旋律 / 主旋律提取并列） ============ #}
 {% if can_edit %}
 <div class="action-bar card">
@@ -59,6 +106,14 @@
     </button>
     <span class="action-hint">与旋律分析并列（可选输出：MIDI / MusicXML 导出）</span>
   </div>
+  {% if convert_status != 'done' %}
+  <div class="action-group">
+    <button class="btn btn-outline" data-retry="1" onclick="retryConvert(this)">
+      🔁 重新转换
+    </button>
+    <span class="action-hint">转换失败后用；若临时音频已清理，会用已入库的 MIDI 重建 MusicXML</span>
+  </div>
+  {% endif %}
   <label class="checkbox-label force-label">
     <input type="checkbox" id="force-rerun"> 重跑模式（清除本组已完成的旧结果）
   </label>
@@ -92,6 +147,8 @@ const STEP_ORDER = ['convert', 'rhythm_grid', 'rhythm_pattern', 'instrumentation
   'voice_id', 'polyphony', 'exchange', 'chords', 'tonality',
   'melody_extraction', 'melody_shape'];
 let polling = null;
+let reloadAfterConvert = false;
+const CAN_EDIT = {{ can_edit|yesno:'true,false' }};
 
 async function fetchStatus() {
   const res = await fetch(`/pieces/${PIECE_ID}/status/`);
@@ -115,6 +172,20 @@ async function runGroup(btn) {
   startPolling();
 }
 
+async function retryConvert(btn) {
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/pieces/${PIECE_ID}/convert/`, {
+      method: 'POST',
+      headers: {'X-CSRFToken': '{{ csrf_token }}'},
+    });
+    const data = await res.json();
+    if (!data.ok) { alert(data.error || '启动失败'); btn.disabled = false; return; }
+    reloadAfterConvert = true;
+    startPolling();
+  } catch (e) { btn.disabled = false; }
+}
+
 function statusPill(status) {
   const map = {
     pending: ['等待中', 'pill-pending'],
@@ -129,24 +200,174 @@ function statusPill(status) {
 function renderSteps(data) {
   const container = document.getElementById('steps-container');
   const results = data.results || {};
+  RUN_COUNTS = data.run_counts || {};
   let html = '';
   for (const step of STEP_ORDER) {
     const r = results[step];
     const label = STEP_LABELS[step];
     if (!r) {
       html += `<div class="step-card step-idle"><div class="step-head">
-        <span class="step-title">${label}</span>${statusPill('idle')}</div></div>`;
+        <span class="step-title">${label}</span>${statusPill('idle')}${histBtn(step)}</div>
+        <div class="hist-slot" data-hist="${step}"></div></div>`;
       continue;
     }
     let body = '';
     if (r.status === 'done' && r.output) body = renderOutput(step, r.output);
     if (r.status === 'error') body = `<pre class="error-pre">${escapeHtml(r.error)}</pre>`;
     html += `<div class="step-card step-${r.status}">
-      <div class="step-head"><span class="step-title">${label}</span>${statusPill(r.status)}</div>
-      ${body}</div>`;
+      <div class="step-head"><span class="step-title">${label}</span>${statusPill(r.status)}${rerunBtn(step, r.status)}${histBtn(step)}</div>
+      ${body}
+      <div class="hist-slot" data-hist="${step}"></div></div>`;
   }
   container.innerHTML = html;
+  updateStsPills(results);
+  refreshOpenHistories();
   return data.any_running;
+}
+
+/* ---------- 历史运行记录（每次运行的输出都归档，重跑也不会丢） ---------- */
+const HIST_OPEN = new Set();
+let RUN_COUNTS = {};
+
+function fmtTime(s) { return s ? s.slice(0, 19).replace('T', ' ') : '—'; }
+
+function histBtn(step) {
+  const n = RUN_COUNTS[step] || 0;
+  if (!n) return '';
+  return `<button class="step-hist-btn" data-histbtn="${step}" `
+    + `onclick="toggleHistory('${step}')" title="查看历史运行记录（共 ${n} 次）">`
+    + `🕘 历史 ${n}</button>`;
+}
+
+function renderHistoryList(step, items) {
+  if (!items.length) return '<p class="muted small">暂无历史记录。</p>';
+  const rows = items.map(it => {
+    const cls = it.status === 'done' ? 'pill-done'
+      : (it.status === 'error' ? 'pill-error' : '');
+    const st = it.status === 'done' ? '已完成'
+      : (it.status === 'error' ? '失败' : it.status);
+    let dur = '';
+    if (it.started_at && it.finished_at) {
+      const sec = Math.round((new Date(it.finished_at) - new Date(it.started_at)) / 1000);
+      if (sec >= 0) dur = `<span class="muted small">耗时 ${sec}s</span>`;
+    }
+    return `<details class="hist-item" data-run="${it.id}" data-step="${step}">
+      <summary><span class="hist-seq">第 ${it.seq} 次</span>
+        <span class="pill ${cls}">${st}</span>
+        <span class="muted small">${fmtTime(it.finished_at)}</span>
+        <span class="muted small">${escapeHtml(it.trigger_label)}</span>${dur}</summary>
+      <div class="hist-body"><p class="muted small">展开后加载…</p></div>
+    </details>`;
+  }).join('');
+  return `<div class="hist-head">历史运行（共 ${items.length} 次，最近在前）</div>${rows}`;
+}
+
+function bindHistory(step) {
+  document.querySelectorAll(`.hist-item[data-step="${step}"]`).forEach(d => {
+    if (d.dataset.bound === '1') return;
+    d.dataset.bound = '1';
+    d.addEventListener('toggle', async () => {
+      if (!d.open || d.dataset.loaded === '1') return;
+      d.dataset.loaded = '1';
+      const body = d.querySelector('.hist-body');
+      try {
+        const res = await fetch(`/pieces/${PIECE_ID}/history/?step=${encodeURIComponent(step)}&run=${d.dataset.run}`);
+        const data = await res.json();
+        if (!data.ok) { body.innerHTML = '<p class="muted small">加载失败。</p>'; return; }
+        const it = data.item;
+        if (it.status === 'error') {
+          body.innerHTML = `<pre class="error-pre">${escapeHtml(it.error)}</pre>`;
+        } else if (it.output) {
+          body.innerHTML = renderOutput(step, it.output);
+        } else {
+          body.innerHTML = '<p class="muted small">该次运行没有留下输出。</p>';
+        }
+      } catch (e) {
+        body.innerHTML = '<p class="muted small">加载失败。</p>';
+      }
+    });
+  });
+}
+
+async function loadHistory(step, slot) {
+  slot.innerHTML = '<p class="muted small">加载历史…</p>';
+  try {
+    const res = await fetch(`/pieces/${PIECE_ID}/history/?step=${encodeURIComponent(step)}`);
+    const data = await res.json();
+    if (!data.ok) { slot.innerHTML = '<p class="muted small">历史加载失败。</p>'; return; }
+    slot.innerHTML = renderHistoryList(step, data.items);
+    bindHistory(step);
+  } catch (e) {
+    slot.innerHTML = '<p class="muted small">历史加载失败。</p>';
+  }
+}
+
+/* 轮询会整块重建 DOM，已展开的历史面板要重新拉一次 */
+function refreshOpenHistories() {
+  HIST_OPEN.forEach(step => {
+    const slot = document.querySelector(`[data-hist="${step}"]`);
+    if (slot) loadHistory(step, slot);
+  });
+}
+
+async function toggleHistory(step) {
+  const slot = document.querySelector(`[data-hist="${step}"]`);
+  if (!slot) return;
+  if (HIST_OPEN.has(step)) {
+    HIST_OPEN.delete(step);
+    slot.innerHTML = '';
+    return;
+  }
+  HIST_OPEN.add(step);
+  await loadHistory(step, slot);
+}
+
+/* 更高层三项（结构 / 织体 / 风格）的状态小标，跟着轮询一起刷新 */
+function updateStsPills(results) {
+  const map = {
+    pending: ['等待中', 'pill-pending'],
+    running: ['运行中…', 'pill-running'],
+    done: ['已完成', 'pill-done'],
+    error: ['失败', 'pill-error'],
+  };
+  ['structure', 'texture', 'style'].forEach(step => {
+    const el = document.querySelector(`[data-sts="${step}"]`);
+    if (!el) return;
+    const r = results[step];
+    const [label, cls] = r ? (map[r.status] || [r.status, '']) : ['未运行', ''];
+    el.textContent = label;
+    el.className = 'pill ' + cls;
+  });
+}
+
+/* ---------- 单模块重跑（右上角不闭合圆环箭头） ---------- */
+const RERUN_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" '
+  + 'stroke="currentColor" stroke-width="2" stroke-linecap="round">'
+  + '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4h-4"/></svg>';
+
+function rerunBtn(step, status) {
+  if (!CAN_EDIT || (status !== 'done' && status !== 'error')) return '';
+  return `<button class="step-rerun" data-step="${step}" `
+    + `onclick="rerunOne('${step}')" title="重新执行本模块"`
+    + ` aria-label="重新执行${STEP_LABELS[step]}">${RERUN_SVG}</button>`;
+}
+
+async function rerunOne(step) {
+  if (!confirm(`重新执行「${STEP_LABELS[step]}」？\n已完成的依赖会直接复用，只重跑本模块。`)) return;
+  const isConvert = (step === 'convert');
+  const body = isConvert ? null : new URLSearchParams({step: step}).toString();
+  try {
+    const res = await fetch(isConvert ? `/pieces/${PIECE_ID}/convert/`
+                                      : `/pieces/${PIECE_ID}/rerun/`, {
+      method: 'POST',
+      headers: Object.assign({'X-CSRFToken': '{{ csrf_token }}'},
+        body ? {'Content-Type': 'application/x-www-form-urlencoded'} : {}),
+      body: body,
+    });
+    const data = await res.json();
+    if (!data.ok) { alert(data.error || '启动失败'); return; }
+    startPolling();
+  } catch (e) { /* 网络抖动忽略 */ }
 }
 
 function escapeHtml(s) {
@@ -156,6 +377,25 @@ function escapeHtml(s) {
 
 function jpre(obj) {
   return `<pre class="json-pre">${escapeHtml(JSON.stringify(obj, null, 2))}</pre>`;
+}
+
+/* LLM 结果统一渲染：区分「正常 / 截断修复 / 解析失败降级」三种状态 */
+function renderLLM(obj, title) {
+  if (!obj) return '';
+  const label = title || 'AI 分析';
+  if (obj._error) {
+    return `<div class="llm-box llm-failed">
+      <b>${label}</b> <span class="tag">解析失败</span>
+      <div class="kv small">${escapeHtml(obj._error)}</div>
+      ${obj._hint ? `<div class="kv small muted">${escapeHtml(obj._hint)}</div>` : ''}
+      ${obj._raw_text ? `<details><summary>查看原始回答</summary>
+        <pre class="json-pre">${escapeHtml(obj._raw_text)}</pre></details>` : ''}
+      <p class="muted small">点本卡右上角 ⟲ 只重跑本模块，不会重跑耗时长的依赖。</p>
+    </div>`;
+  }
+  return `<div class="llm-box"><b>${label}</b>`
+    + `${obj._truncated ? ' <span class="tag">截断修复：部分字段缺失</span>' : ''}`
+    + `${jpre(obj)}</div>`;
 }
 
 function tableFrom(rows, headers) {
@@ -182,7 +422,7 @@ const RENDERERS = {
     return `
       <div class="kv"><b>切分比例：</b>${(s.syncopation_ratio * 100).toFixed(1)}%</div>
       <div class="kv"><b>主要节奏型：</b>${(s.top_measure_patterns||[]).map(p => `${p.pattern}（×${p.count}）`).join('；')}</div>
-      ${o.llm_analysis ? `<div class="llm-box"><b>AI 律动分析</b>${jpre(o.llm_analysis)}</div>` : ''}`;
+      ${renderLLM(o.llm_analysis, 'AI 律动分析')}`;
   },
   instrumentation(o) {
     const rows = (o.parts || []).map(p => [p.name, p.instrument, p.family, p.is_voice ? '人声' : '—', p.note_count]);
@@ -210,7 +450,9 @@ const RENDERERS = {
   },
   chords(o) {
     const rows = (o.progression || []).map(r => [r.label, r.chord || '—', r.function || '—', r.inversion || '—', r.confidence ?? '—']);
+    const failed = (o.llm_errors || []).length;
     return `<div class="kv"><b>窗口：</b>${o.window_type === 'measure' ? '按小节' : '按拍'}，共 ${o.window_count} 个</div>` +
+      (failed ? `<div class="alert alert-warn">有 ${failed} 个批次未通过 JSON 解析（对应窗口标记为「LLM 未返回」），可点右上角 ⟲ 重跑本模块。</div>` : '') +
       tableFrom(rows, ['窗口', '和弦', '功能', '转位', '置信度']);
   },
   tonality(o) {
@@ -220,6 +462,10 @@ const RENDERERS = {
       <div class="kv"><b>主调：</b><span class="highlight">${o.main_key || '—'}</span>（置信度 ${o.confidence ?? '—'}）</div>
       ${regions.length ? tableFrom(regions, ['小节范围', '调性', '类型', '依据']) : ''}
       ${mods.length ? tableFrom(mods, ['转调点', '调性变化', '手法']) : ''}
+      ${o.llm_error ? `<div class="llm-box llm-failed"><b>AI 调性分析</b> <span class="tag">解析失败</span>
+        <div class="kv small">${escapeHtml(o.llm_error)}</div>
+        ${o.llm_raw_text ? `<details><summary>查看原始回答</summary><pre class="json-pre">${escapeHtml(o.llm_raw_text)}</pre></details>` : ''}
+        <p class="muted small">上方调性区域/转调为空，点右上角 ⟲ 可只重跑本模块。</p></div>` : ''}
       ${o.description ? `<p class="llm-desc">${escapeHtml(o.description)}</p>` : ''}`;
   },
   melody_extraction(o) {
@@ -239,8 +485,7 @@ const RENDERERS = {
         <details class="melody-detail" ${i === 0 ? 'open' : ''}>
           <summary>${escapeHtml(a.segment)}</summary>
           <div class="kv"><b>本地特征：</b>${jpre(a.features)}</div>
-          <div class="llm-box"><b>AI 旋律分析</b>${jpre(a.llm_analysis)}</div>
-        </details>`).join('');
+          ${renderLLM(a.llm_analysis, 'AI 旋律分析')}</details>`).join('');
   },
 };
 
@@ -258,12 +503,14 @@ async function poll() {
       clearInterval(polling);
       polling = null;
       setButtonsDisabled(false);
+      if (reloadAfterConvert) { reloadAfterConvert = false; location.reload(); }
     }
   } catch (e) { /* 网络抖动忽略 */ }
 }
 
 function setButtonsDisabled(disabled) {
-  document.querySelectorAll('.action-bar button[data-group]').forEach(
+  document.querySelectorAll(
+    '.action-bar button[data-group], .action-bar button[data-retry], .step-rerun').forEach(
     b => b.disabled = disabled);
 }
 

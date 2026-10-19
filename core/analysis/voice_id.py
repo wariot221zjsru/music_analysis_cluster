@@ -15,7 +15,7 @@ from .scoredata import (
 def _part_pitch_seq(part: PartInfo, m_start: float, m_end: float):
     """截取声部在 [m_start, m_end) 四分音符范围内的音高序列。"""
     seq = []
-    for e in part.events:
+    for e in part.pitched_events:
         if m_start <= e.offset < m_end:
             # 和弦取最高音（旋律显著性的粗粒度近似）
             seq.append(max(e.midi_pitches))
@@ -60,7 +60,7 @@ def salience_matrix(data: ScoreData, config) -> dict:
                                  'salience': 0.0})
                 continue
             mean_pitch = sum(seq) / len(seq)
-            total_dur = sum(e.duration for e in p.events
+            total_dur = sum(e.duration for e in p.pitched_events
                             if m_start <= e.offset < m_end)
             n_onsets = len(seq)
             per_part.append({
@@ -127,6 +127,7 @@ def polyphony_density(data: ScoreData) -> dict:
     per_part = {p.index: {'poly': 0, 'total': 0} for p in data.parts}
     while t < data.total_ql:
         any_sound = False
+        any_poly = False
         for p in data.parts:
             pitches = sounding_pitches_at(p, t)
             if pitches:
@@ -134,9 +135,13 @@ def polyphony_density(data: ScoreData) -> dict:
                 per_part[p.index]['total'] += 1
                 if len(pitches) >= 2:
                     per_part[p.index]['poly'] += 1
-                    poly += 1
+                    any_poly = True
         if any_sound:
             total += 1
+            # 分子按"时间点"计（只要有一个声部在此时点发 ≥2 音），
+            # 否则分子是声部数、分母是时间点数，ratio 会 >1 导致复调判定恒真。
+            if any_poly:
+                poly += 1
         t += step
     return {
         'grid_step_quarter': step,
@@ -163,14 +168,16 @@ def _role_candidates(data: ScoreData, sal: dict) -> list:
     ranked = sorted(
         ((idx, s / n_windows) for idx, s in total_sal.items()),
         key=lambda kv: -kv[1])
-    mean_pitches = {str(p.index): p.mean_pitch for p in data.parts}
+    # 只有有音高的声部参与角色判定（打击乐会拉低 min，导致"低音"永远判不出来）
+    mean_pitches = {str(p.index): p.mean_pitch for p in data.parts if p.pitched_events}
 
+    low_ref = min(mean_pitches.values()) if mean_pitches else 60.0
     roles = []
     for rank, (idx, s) in enumerate(ranked):
-        mp = mean_pitches.get(idx, 60)
+        mp = mean_pitches.get(idx, 60.0)
         if rank == 0 and s > 0.35:
             role = '主旋律（候选）'
-        elif mp <= min(mean_pitches.values()) + 2 and rank == len(ranked) - 1:
+        elif mp <= low_ref + 2 and rank == len(ranked) - 1:
             role = '低音'
         elif s < 0.2:
             role = '伴奏'
