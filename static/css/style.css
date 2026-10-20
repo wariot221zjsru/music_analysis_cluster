@@ -218,6 +218,34 @@ body {
 .conf-high { color: var(--done); font-weight: 600; }
 .conf-mid { color: var(--running); }
 .conf-low { color: var(--error); }
+
+/* ---------- 主旋律导出设置（节奏 / 音色） ---------- */
+/* 直接摆在卡片上的那条「按指定节奏 / 乐器导出」，别藏在折叠区里 */
+.export-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  margin: 8px 0 0; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--accent-bg, #f4f7ff); font-size: 12px;
+}
+.export-bar > b { color: var(--text); font-weight: 600; }
+.export-bar .export-sel { max-width: 120px; }
+.export-settings {
+  margin: 10px 0 0; border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px; background: var(--bg-soft, #fafafa);
+}
+.export-settings > summary {
+  cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text);
+}
+.export-form { margin-top: 8px; display: grid; gap: 8px; }
+.export-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  font-size: 12px;
+}
+.export-row > b { min-width: 32px; color: var(--muted); font-weight: 600; }
+.export-opt { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.export-num { width: 68px; padding: 2px 4px; font-size: 12px; }
+.export-sel { max-width: 190px; padding: 2px 4px; font-size: 12px; }
+.export-actions { border-top: 1px dashed var(--border); padding-top: 8px; }
 .llm-box.llm-failed { border-left-color: var(--error); }
 .alert-warn {
   background: #fff8e6; border: 1px solid #f2d98d; color: #7a5b00;

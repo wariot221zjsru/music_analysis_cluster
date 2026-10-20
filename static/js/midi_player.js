@@ -150,19 +150,23 @@
 
   /* ---------------- Web Audio 合成 ---------------- */
 
-  function waveFor(program) {
-    if (program <= 7) return 'triangle';      // 钢琴
-    if (program <= 15) return 'sine';         // 色彩打击
-    if (program <= 23) return 'sawtooth';     // 风琴
-    if (program <= 31) return 'triangle';     // 吉他
-    if (program <= 39) return 'triangle';     // 贝斯
-    if (program <= 47) return 'sawtooth';     // 弦乐
-    if (program <= 55) return 'triangle';     // 合奏 / 人声
-    if (program <= 63) return 'sawtooth';     // 铜管
-    if (program <= 71) return 'square';       // 簧片
-    if (program <= 79) return 'sine';         // 管乐
-    return 'square';                          // 合成与其它
-  }
+function waveFor(program) {
+    // 更细粒度的波形映射，使不同音色家族更易区分
+    // 基于 GM 音色号的家族划分，分配不同基础波形
+    if (program >= 96 && program <= 103) return 'triangle';   // 合成效果
+    if (program >= 88 && program <= 95) return 'sine';        // 合成垫音
+    if (program >= 80 && program <= 87) return 'square';      // 合成主音
+    if (program >= 72 && program <= 79) return 'sine';        // 管乐
+    if (program >= 64 && program <= 71) return 'square';      // 簧片
+    if (program >= 56 && program <= 63) return 'sawtooth';    // 铜管
+    if (program >= 48 && program <= 55) return 'triangle';    // 合奏乐队
+    if (program >= 40 && program <= 47) return 'sawtooth';    // 弦乐
+    if (program >= 32 && program <= 39) return 'triangle';    // 贝斯
+    if (program >= 24 && program <= 31) return 'triangle';    // 吉他
+    if (program >= 16 && program <= 23) return 'sawtooth';    // 风琴
+    if (program >= 8 && program <= 15) return 'sine';         // 色彩打击乐器
+    return 'triangle';                                        // 钢琴 (0-7)
+}
 
   function Player() {
     this.ctx = null;
@@ -284,7 +288,16 @@
   function bind(btn) {
     var url = btn.getAttribute('data-midi-url');
     if (!url) return;
+    if (btn.getAttribute('data-midi-bound') === '1') return;   // 已绑定，避免重复
+    btn.setAttribute('data-midi-bound', '1');
+    // 状态文本：优先同容器内的 [data-midi-status]，没有就临时补一个
     var status = btn.parentNode.querySelector('[data-midi-status]');
+    if (!status) {
+      status = document.createElement('span');
+      status.className = 'midi-status';
+      btn.parentNode.appendChild(status);
+    }
+    var initial = btn.textContent;
     var player = new Player();
     var ticker = null;
 
@@ -295,7 +308,7 @@
     }
 
     function reset() {
-      btn.textContent = '▶ 播放';
+      btn.textContent = initial || '▶ 播放';
       btn.classList.remove('is-playing');
       btn.disabled = false;
       if (ticker) { clearInterval(ticker); ticker = null; }
@@ -349,6 +362,22 @@
     var btns = document.querySelectorAll('.midi-play[data-midi-url]');
     for (var i = 0; i < btns.length; i++) bind(btns[i]);
   }
+
+  // 步骤卡是 JS 轮询后动态渲染的，导出链接（含▶试听按钮）会不断重建。
+  // 暴露 bindAll 供页面在每次 renderSteps 之后重新扫描绑定。
+  window.MidiPlayer = {
+    bindAll: function () {
+      var btns = document.querySelectorAll('.midi-play[data-midi-url]');
+      for (var i = 0; i < btns.length; i++) bind(btns[i]);
+    },
+    // 重新导出后文件内容变了，按 url 清掉解析缓存，否则还是播旧音色
+    invalidate: function (url) { delete cache[url]; },
+    invalidatePrefix: function (prefix) {
+      Object.keys(cache).forEach(function (k) {
+        if (k.indexOf(prefix) === 0) delete cache[k];
+      });
+    },
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);

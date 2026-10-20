@@ -19,6 +19,7 @@ import copy
 from django.utils import timezone
 
 from .. import storage
+from . import melody_export as mex
 from .llm import run_llm_json_soft, JSON_ONLY
 from .scoredata import (
     ScoreData, build_measure_map, interval_seq, midi_to_name,
@@ -27,50 +28,78 @@ from .scoredata import (
 
 # ---------------- 主旋律声部识别（选轨，并列、可选） ----------------
 
-def _export_part_as_melody(data: ScoreData, part_index: int):
-    """把声部抽出为独立旋律 Stream（music21）。"""
-    from music21 import stream, note as m21note, chord as m21chord
+def _note_or_chord(ev, duration=None):
+    """事件 → music21 音符 / 和弦（与显著性口径一致：和弦保留全部音高）。"""
+    from music21 import note as m21note, chord as m21chord
 
+    if len(ev.midi_pitches) == 1:
+        n = m21note.Note()
+        n.pitch.midi = ev.midi_pitches[0]
+    else:
+        n = m21chord.Chord([m for m in ev.midi_pitches])
+    n.duration.quarterLength = (duration if duration is not None else ev.duration)
+    return n
+
+
+def _export_part_as_melody(data: ScoreData, part_index: int, options: dict):
+    """把声部抽出为独立旋律 Stream（music21），带节奏 / 音色选项。"""
+    from music21 import stream
+
+    measure_offsets, _, bar_ql = build_measure_map(data)
     src = data.parts[part_index]
     part = stream.Part()
     part.partName = f'主旋律 · {src.name}'
     for e in src.pitched_events:
-        if len(e.midi_pitches) == 1:
-            n = m21note.Note()
-            n.pitch.midi = e.midi_pitches[0]
-        else:
-            n = m21chord.Chord([m + 0 for m in e.midi_pitches])
-        n.duration.quarterLength = e.duration
-        part.insert(e.offset, n)
-    return part
+        part.insert(e.offset, _note_or_chord(e))
+    tempo_desc = mex.apply_tempo(part, data, measure_offsets, bar_ql, options)
+    inst_desc = mex.apply_instruments(
+        part, data, [{'offset': 0.0, 'part_index': part_index}], options)
+    return part, {'tempo': tempo_desc, 'instrument': inst_desc}
 
 
-def _export_timeline_spliced(data: ScoreData, timeline: list):
-    """按主旋律归属时间线拼接各段为一条主旋律（交接分支）。"""
-    from music21 import stream, note as m21note, chord as m21chord
+def _export_timeline_spliced(data: ScoreData, timeline: list, options: dict):
+    """按主旋律归属时间线拼接各段为一条主旋律（交接分支），带节奏 / 音色选项。"""
+    from music21 import stream, tempo as m21tempo
 
-    measure_offsets, _, _ = build_measure_map(data)
+    measure_offsets, _, bar_ql = build_measure_map(data)
     part = stream.Part()
     part.partName = '主旋律（时间线拼接 · 交接）'
+    spans = []
     cursor = 0.0
     for seg in timeline:
         idx = seg['part_index']
         if idx is None:
             continue
-        s = measure_offsets.get(seg['start_measure'], 0.0)
-        e = measure_offsets.get(seg['end_measure'] + 1,
-                                s + (seg['end_measure'] - seg['start_measure'] + 1) * 4.0)
-        for ev in data.parts[idx].pitched_events:
-            if s <= ev.offset < e:
-                if len(ev.midi_pitches) == 1:
-                    n = m21note.Note()
-                    n.pitch.midi = ev.midi_pitches[0]
-                else:
-                    n = m21chord.Chord([m + 0 for m in ev.midi_pitches])
-                n.duration.quarterLength = ev.duration
-                part.insert(cursor + (ev.offset - s), n)
-        cursor += (e - s)
-    return part
+        # 用 melody_export 的区间换算：小节号查不到时按相邻小节推算，
+        # 不再退回 0.0 / 硬编码 4.0 拍（旧实现会让整段错位到曲首）
+        s, e = mex.seg_range(data, measure_offsets, bar_ql,
+                             seg['start_measure'], seg['end_measure'])
+        span = max(e - s, 0.0)
+        spans.append({'offset': cursor, 'part_index': idx})
+        for ev in mex.events_in(data.parts[idx], s, e):
+            part.insert(cursor + (ev.offset - s),
+                        _note_or_chord(ev, mex.clamped_duration(ev, e)))
+        cursor += span
+    if options['tempo_mode'] == 'original':
+        first_bpm = next((t['bpm'] for t in (data.tempos or []) if t.get('bpm')),
+                         mex.DEFAULT_BPM)
+        part.insert(0.0, m21tempo.MetronomeMark(number=float(first_bpm)))
+        tempo_desc = f'原曲速度 {float(first_bpm):.0f} BPM（拼接后小节错位，按单一速度写入）'
+    else:
+        tempo_desc = mex.apply_tempo(part, data, measure_offsets, bar_ql, options)
+    inst_desc = mex.apply_instruments(part, data, spans, options)
+    return part, {'tempo': tempo_desc, 'instrument': inst_desc}
+
+
+def _write_melody(piece, part_desc, stem: str, options: dict):
+    """补小节 → 落盘 → 附记本次导出用的节奏 / 音色。"""
+    part, desc = part_desc
+    files = save_stream(piece, mex.finalize_part(part),
+                        mex.stem_with_options(stem, options))
+    files['options'] = dict(options)
+    files['tempo_desc'] = desc['tempo']
+    files['instrument_desc'] = desc['instrument']
+    return files
 
 
 def save_stream(piece, stream_obj, stem: str):
@@ -94,13 +123,65 @@ def save_stream(piece, stream_obj, stem: str):
         storage.cleanup_workdir(workdir)
 
 
+def build_export_parts(data: ScoreData, prior_output: dict, options: dict) -> list:
+    """按上一次的分支结果构建导出 Part（**不落盘**）。
+
+    返回 [{'key', 'stem', 'part', 'desc'}]：
+      key  = 结果字典里的键（稳定，不随选项变，页面靠它识别"候选 N"）
+      stem = 落盘文件名主干，带节奏 / 音色后缀
+
+    复调 / 交接 / 单声 三种分支共用：分支决定"哪几条声部 / 哪些段"，
+    节奏与音色由 options 决定。
+    """
+    built = []
+    if not prior_output:
+        return built
+    mode = prior_output.get('mode') or ''
+    if '交接' in mode:
+        timeline = prior_output.get('attribution_timeline') or []
+        part, desc = _export_timeline_spliced(data, timeline, options)
+        built.append({'key': 'melody_spliced', 'stem': 'melody_spliced',
+                      'part': part, 'desc': desc})
+    elif '复调' in mode:
+        for c in (prior_output.get('candidates') or [])[:5]:
+            idx = c.get('part_index')
+            if idx is None:
+                continue
+            part, desc = _export_part_as_melody(data, idx, options)
+            key = f'melody_candidate_{idx}'
+            built.append({'key': key, 'stem': key, 'part': part, 'desc': desc})
+    else:
+        chosen = prior_output.get('chosen') or {}
+        idx = chosen.get('part_index')
+        if idx is not None:
+            part, desc = _export_part_as_melody(data, idx, options)
+            key = f'melody_{idx}'
+            built.append({'key': key, 'stem': key, 'part': part, 'desc': desc})
+    return built
+
+
+def export_again(data: ScoreData, piece, prior_output: dict, options: dict) -> dict:
+    """在不重跑分析的前提下，按新的节奏 / 音色重新导出主旋律声部识别（选轨）。
+
+    ``prior_output`` 是上一次 melody_extraction 的 output（含 mode /
+    attribution_timeline / chosen / candidates）。
+    """
+    out = {}
+    for b in build_export_parts(data, prior_output, options):
+        out[b['key']] = _write_melody(piece, (b['part'], b['desc']),
+                                      b['stem'], options)
+    return out
+
+
 def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
-                      poly_out: dict, exchange_out: dict) -> dict:
+                      poly_out: dict, exchange_out: dict,
+                      options: dict | None = None) -> dict:
     """主旋律**声部识别**（选轨）主入口。
 
     用户单独触发；复调→多候选，交接→时间线分段拼接。
     判定口径与阈值沿用原有实现（exchange 的两个阈值不变）。
     """
+    options = mex.resolve_options(config, options)
     sal = voice_out['salience']
     part_names = sal['part_names']
 
@@ -122,31 +203,34 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
 
     result = {
         'candidates': candidates,
+        'export_options': options,
+        'export_options_label': mex.options_label(options),
         'exports': {},
     }
 
     if exchange_out['is_exchange']:
         # 交接分支：时间线 + 拼接导出
         timeline = exchange_out['attribution_timeline']
-        spliced = _export_timeline_spliced(data, timeline)
         result['mode'] = '主旋律交接（时间线式归属）'
         result['attribution_timeline'] = timeline
-        result['exports'] = save_stream(piece, spliced, 'melody_spliced')
+        result['exports'] = _write_melody(
+            piece, _export_timeline_spliced(data, timeline, options),
+            'melody_spliced', options)
     elif poly_out['is_polyphonic']:
         # 复调分支：多候选 + 置信度；导出 top-1（供参考）
         result['mode'] = '复调（多候选 + 置信度，不强行选唯一）'
         if candidates:
-            top = _export_part_as_melody(data, candidates[0]['part_index'])
-            result['exports'] = save_stream(
-                piece, top, f'melody_candidate_{candidates[0]["part_index"]}')
+            top = _export_part_as_melody(data, candidates[0]['part_index'], options)
+            result['exports'] = _write_melody(
+                piece, top, f'melody_candidate_{candidates[0]["part_index"]}', options)
     else:
         # 单声 / 主调：显著性最高声部即主旋律
         result['mode'] = '单声 / 主调（唯一主旋律）'
         if candidates:
-            top = _export_part_as_melody(data, candidates[0]['part_index'])
+            top = _export_part_as_melody(data, candidates[0]['part_index'], options)
             result['chosen'] = candidates[0]
-            result['exports'] = save_stream(
-                piece, top, f'melody_{candidates[0]["part_index"]}')
+            result['exports'] = _write_melody(
+                piece, top, f'melody_{candidates[0]["part_index"]}', options)
 
     return result
 
@@ -207,7 +291,7 @@ def melody_shape(data: ScoreData, config, voice_out: dict, poly_out: dict,
                  exchange_out: dict) -> dict:
     """旋律形态分析主入口（叙述链"旋律"小节的数据来源）。"""
     from .scoredata import build_measure_map
-    measure_offsets, _, _ = build_measure_map(data)
+    measure_offsets, _, bar_ql = build_measure_map(data)
     part_names = voice_out['salience']['part_names']
     branch = ('主旋律交接' if exchange_out['is_exchange']
               else ('复调' if poly_out['is_polyphonic'] else '单声 / 主调'))
@@ -218,13 +302,11 @@ def melody_shape(data: ScoreData, config, voice_out: dict, poly_out: dict,
         for seg in exchange_out['attribution_timeline']:
             if seg['part_index'] is None:
                 continue
-            s = measure_offsets.get(seg['start_measure'], 0.0)
-            e = measure_offsets.get(
-                seg['end_measure'] + 1,
-                s + (seg['end_measure'] - seg['start_measure'] + 1) * 4.0)
+            # 与导出同一套区间换算（不退回 0.0、不硬编码 4.0 拍）
+            s, e = mex.seg_range(data, measure_offsets, bar_ql,
+                                 seg['start_measure'], seg['end_measure'])
             seq = [max(ev.midi_pitches)
-                   for ev in data.parts[seg['part_index']].pitched_events
-                   if s <= ev.offset < e]
+                   for ev in mex.events_in(data.parts[seg['part_index']], s, e)]
             if not seq:
                 continue
             label = (f"第{seg['start_measure']}-{seg['end_measure']}小节 · "

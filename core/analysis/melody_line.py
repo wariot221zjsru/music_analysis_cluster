@@ -29,25 +29,16 @@
    - absolute：**原位**写入（各段保留真实小节位置，段间空隙留白）——MIR 语义；
    - spliced：首尾相接的连续单声部（方便当一条旋律线听 / 导入 DAW）。
 """
+from . import melody_export as mex
 from .melody import save_stream
 from .scoredata import ScoreData, build_measure_map, windows_of_measures
 
 
 # ---------------------------------------------------------------- 工具
-
-def _seg_range(data: ScoreData, measure_offsets: dict, bar_ql: float,
-               start_m: int, end_m: int):
-    """段 [start_m, end_m] 小节的四分音符区间（含最后一小节的全部音符）。"""
-    s = measure_offsets.get(start_m, 0.0)
-    e = measure_offsets.get(end_m + 1)
-    if e is None:
-        e = (data.total_ql + 1e-6 if end_m >= data.measure_count
-             else s + (end_m - start_m + 1) * bar_ql)
-    return s, e
-
-
-def _events_in(part, s: float, e: float):
-    return [ev for ev in part.pitched_events if s <= ev.offset < e]
+# 小节区间换算 / 事件截取 / 导出的节奏与音色统一走 melody_export：
+#   ① 小节号查不到偏移时按相邻小节推算，不再退回 0.0（旧实现会把段起点当成
+#      全曲开头，导出整段错位）；
+#   ② 导出写入 tempo 与 instrument，不再是恒 120 BPM + 默认钢琴。
 
 
 def _window_choices(matrix_row: dict, data: ScoreData) -> list:
@@ -125,67 +116,99 @@ def _level(conf: float, hi: float, mid: float) -> str:
 
 # ---------------------------------------------------------------- 导出
 
-def _note_from_event(ev):
-    from music21 import note as m21note
-    n = m21note.Note()
-    n.pitch.midi = max(ev.midi_pitches)
-    n.duration.quarterLength = ev.duration
-    return n
-
-
 def _export_absolute(data: ScoreData, segments: list, measure_offsets: dict,
-                     bar_ql: float):
+                     bar_ql: float, options: dict):
     """原位导出：各段留在真实小节位置，未覆盖区间留白（MIR 语义）。"""
     from music21 import stream
 
     part = stream.Part()
     part.partName = '主旋律线（逐段追踪 · 原位）'
+    spans = []
     for seg in segments:
-        s, e = _seg_range(data, measure_offsets, bar_ql,
-                          seg['start_measure'], seg['end_measure'])
-        for ev in _events_in(data.parts[seg['part_index']], s, e):
-            part.insert(ev.offset, _note_from_event(ev))
-    return part
+        s, e = mex.seg_range(data, measure_offsets, bar_ql,
+                             seg['start_measure'], seg['end_measure'])
+        spans.append({'offset': s, 'part_index': seg['part_index']})
+        src = data.parts[seg['part_index']]
+        for ev in mex.events_in(src, s, e):
+            part.insert(ev.offset, mex.make_note(ev))
+    # 节奏 / 音色：原位导出保留原曲小节位置，故按真实位置写入
+    tempo_desc = mex.apply_tempo(part, data, measure_offsets, bar_ql, options)
+    inst_desc = mex.apply_instruments(part, data, spans, options)
+    return part, {'tempo': tempo_desc, 'instrument': inst_desc}
 
 
 def _export_spliced(data: ScoreData, segments: list, measure_offsets: dict,
-                    bar_ql: float):
+                    bar_ql: float, options: dict):
     """拼接导出：各段首尾相接，抹平段间空隙（监听 / 导入 DAW 用）。"""
     from music21 import stream
 
     part = stream.Part()
     part.partName = '主旋律线（逐段追踪 · 无缝拼接）'
+    spans = []
     cursor = 0.0
     for seg in segments:
-        s, e = _seg_range(data, measure_offsets, bar_ql,
-                          seg['start_measure'], seg['end_measure'])
+        s, e = mex.seg_range(data, measure_offsets, bar_ql,
+                             seg['start_measure'], seg['end_measure'])
         span = max(e - s, 0.0)
-        for ev in _events_in(data.parts[seg['part_index']], s, e):
-            part.insert(cursor + (ev.offset - s), _note_from_event(ev))
+        spans.append({'offset': cursor, 'part_index': seg['part_index']})
+        src = data.parts[seg['part_index']]
+        for ev in mex.events_in(src, s, e):
+            # 时值裁剪到段尾，避免上一段的长音压到下一段头上
+            part.insert(cursor + (ev.offset - s),
+                        mex.make_note(ev, mex.clamped_duration(ev, e)))
         cursor += span
-    return part
+    # 拼接后小节已与原曲错位，变速标记没有意义，退化为单一速度
+    if options['tempo_mode'] == 'original':
+        from music21 import tempo as m21tempo
+        first_bpm = next((t['bpm'] for t in (data.tempos or []) if t.get('bpm')),
+                         mex.DEFAULT_BPM)
+        part.insert(0.0, m21tempo.MetronomeMark(number=float(first_bpm)))
+        tempo_desc = f'原曲速度 {float(first_bpm):.0f} BPM（拼接后小节错位，按单一速度写入）'
+    else:
+        tempo_desc = mex.apply_tempo(part, data, measure_offsets, bar_ql, options)
+    inst_desc = mex.apply_instruments(part, data, spans, options)
+    return part, {'tempo': tempo_desc, 'instrument': inst_desc}
 
 
-def _write_part(piece, part, stem: str):
-    """写 MIDI + MusicXML；若谱面无小节（原位导出的留白场景）先补齐。"""
-    from music21 import stream
+def build_export_parts(data: ScoreData, segments: list, options: dict,
+                       measure_offsets=None, bar_ql=None) -> list:
+    """构建两种版本的导出 Part（**不落盘**）。
 
-    try:
-        has_measure = bool(part.recurse().getElementsByClass(stream.Measure))
-    except Exception:  # noqa: BLE001
-        has_measure = False
-    if not has_measure:
-        try:
-            part = part.makeMeasures(inPlace=False)
-            part.makeRests(fillGaps=True, inPlace=True)
-        except Exception:  # noqa: BLE001
-            pass
-    return save_stream(piece, part, stem)
+    返回 [{'key', 'stem', 'part', 'desc'}]：
+      key  = 结果字典里的键（absolute / spliced，保持稳定）
+      stem = 落盘文件名主干，带节奏 / 音色后缀（换选项就换文件名，
+             避免同名覆盖后浏览器给缓存里的旧文件）
+
+    "按当前设置直接下载"与"应用并重新导出"共用这一份，保证两条路导出一致。
+    """
+    if measure_offsets is None or bar_ql is None:
+        measure_offsets, _, bar_ql = build_measure_map(data)
+    built = []
+    for kind, fn, stem in (('absolute', _export_absolute, 'melody_line_absolute'),
+                           ('spliced', _export_spliced, 'melody_line_spliced')):
+        part, desc = fn(data, segments, measure_offsets, bar_ql, options)
+        built.append({'key': kind, 'stem': mex.stem_with_options(stem, options),
+                      'part': part, 'desc': desc})
+    return built
+
+
+def export_segments(data: ScoreData, piece, segments: list, options: dict,
+                    measure_offsets=None, bar_ql=None) -> dict:
+    """按段导出两种版本（供主入口与"重新导出"接口共用）。"""
+    out = {}
+    for b in build_export_parts(data, segments, options, measure_offsets, bar_ql):
+        files = save_stream(piece, mex.finalize_part(b['part']), b['stem'])
+        files['options'] = dict(options)
+        files['tempo_desc'] = b['desc']['tempo']
+        files['instrument_desc'] = b['desc']['instrument']
+        out[b['key']] = files
+    return out
 
 
 # ---------------------------------------------------------------- 主入口
 
-def melody_line(data: ScoreData, config, piece, voice_out: dict) -> dict:
+def melody_line(data: ScoreData, config, piece, voice_out: dict,
+                options: dict | None = None) -> dict:
     """主旋律线追踪主入口（逐段，MIR 口径）。
 
     依赖 voice_id 的显著性矩阵与谱面的人声标记；**不依赖** polyphony / exchange，
@@ -198,6 +221,7 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict) -> dict:
     min_bars = max(int(getattr(config, 'melody_segment_min_bars', 2) or 1), 1)
     hi = float(getattr(config, 'melody_confidence_high', 0.25))
     mid = float(getattr(config, 'melody_confidence_mid', 0.10))
+    options = mex.resolve_options(config, options)
 
     windows = windows_of_measures(data, config.analysis_window_bars)
     if not windows:
@@ -205,9 +229,17 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict) -> dict:
                     'end_measure': max(data.measure_count, 1)}]
 
     # ---- ① 窗级归属（人声掩膜 + 显著性） ----
+    # 按 start_measure 取窗，不按下标：matrix 是 voice_id 用**当时**的窗口长度
+    # 算的，本步只依赖 voice_id，改过窗口设置后单步重跑会复用旧矩阵，
+    # 按下标取会让"窗边界"和"显著性"对不上，导出取到错误小节的音符。
+    by_start = {int(r.get('start_measure', -1)): r for r in matrix}
     win_rows = []
-    for i, w in enumerate(windows):
-        row = matrix[i] if i < len(matrix) else {'scores': {}}
+    matrix_mismatch = []
+    for w in windows:
+        row = by_start.get(w['start_measure'])
+        if row is None:
+            row = {'scores': {}}
+            matrix_mismatch.append(w['start_measure'])
         choices = _window_choices(row, data)
         best, margin = _pick(choices, voice_priority)
         win_rows.append({
@@ -247,9 +279,9 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict) -> dict:
     runs = _merge_short_runs(runs, min_bars)
     segments = []
     for i, r in enumerate(runs):
-        s, e = _seg_range(data, measure_offsets, bar_ql,
-                          r['start_measure'], r['end_measure'])
-        notes = _events_in(data.parts[r['part_index']], s, e)
+        s, e = mex.seg_range(data, measure_offsets, bar_ql,
+                             r['start_measure'], r['end_measure'])
+        notes = mex.events_in(data.parts[r['part_index']], s, e)
         rows = [x for x in win_rows
                 if x['part_index'] is not None
                 and r['start_measure'] <= x['start_measure'] <= r['end_measure']
@@ -298,21 +330,26 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict) -> dict:
             'gap_bars': max(total_bars - covered, 0),
         },
         'windows': win_rows,
+        'export_options': options,
+        'export_options_label': mex.options_label(options),
         'exports': {},
     }
+    if matrix_mismatch:
+        # 显著性矩阵与当前窗口划分对不上（改过窗口设置后只重跑了本模块）
+        result['window_warning'] = (
+            f'有 {len(matrix_mismatch)} 个窗（起始小节 {matrix_mismatch[:6]}）'
+            '在声部识别的显著性矩阵里找不到对应记录，已按静默处理。'
+            '请在「分析旋律」里重跑声部识别，或把窗口长度改回原值。')
 
     if not segments:
         result['note'] = '全曲没有可用于追踪的有音高事件（可能整谱静默或全为打击乐）。'
         return result
 
-    # ---- ⑤ 导出（原位 + 无缝拼接） ----
+    # ---- ⑤ 导出（原位 + 无缝拼接，带节奏 / 音色选项） ----
     try:
-        result['exports']['absolute'] = _write_part(
-            piece, _export_absolute(data, segments, measure_offsets, bar_ql),
-            'melody_line_absolute')
-        result['exports']['spliced'] = _write_part(
-            piece, _export_spliced(data, segments, measure_offsets, bar_ql),
-            'melody_line_spliced')
+        result['exports'] = export_segments(
+            data, piece, segments, options,
+            measure_offsets=measure_offsets, bar_ql=bar_ql)
     except Exception as exc:  # noqa: BLE001
         # 导出失败不该让整步失败：分段结果仍然有效
         result['export_error'] = f'{exc}'

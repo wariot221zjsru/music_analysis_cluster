@@ -66,6 +66,51 @@
     </div>
   </div>
 
+  <h3>主旋律导出（节奏 / 音色）</h3>
+  <p class="field-hint">
+    两张主旋律卡（⑨ 选轨、⑩ 逐段）共用的<b>默认</b>导出方式。
+    每个作品详情页上还能单独临时改，改完点「应用并重新导出」即可，不必重跑分析。
+    以前导出是写死的 120 BPM + 默认钢琴，听起来永远只有一种乐器，这里就是用来改掉它的。
+  </p>
+  <div class="settings-grid">
+    <div>
+      <label class="field-label">导出节奏</label>
+      <select name="melody_export_tempo_mode" class="input">
+        <option value="original"
+          {% if config.melody_export_tempo_mode == 'original' %}selected{% endif %}>原始节奏（按谱面速度，变速也保留）</option>
+        <option value="changed"
+          {% if config.melody_export_tempo_mode == 'changed' %}selected{% endif %}>统一 BPM</option>
+      </select>
+      <p class="field-hint">拼接类导出（⑨ 交接 / ⑩ 无缝版）小节会与原曲错位，变速标记无意义，自动按单一速度写入。</p>
+    </div>
+    <div>
+      <label class="field-label">统一 BPM</label>
+      <input type="number" min="20" max="300" name="melody_export_bpm" class="input"
+             value="{{ config.melody_export_bpm }}">
+      <p class="field-hint">仅在「导出节奏 = 统一 BPM」时生效，默认 120。</p>
+    </div>
+    <div>
+      <label class="field-label">导出音色</label>
+      <select name="melody_export_instrument_mode" class="input">
+        <option value="original"
+          {% if config.melody_export_instrument_mode == 'original' %}selected{% endif %}>各段原始音色</option>
+        <option value="changed"
+          {% if config.melody_export_instrument_mode == 'changed' %}selected{% endif %}>统一音色</option>
+      </select>
+      <p class="field-hint">「各段原始音色」用每段自己声部的 MIDI 音色号，多段接力时能听出换乐器。</p>
+    </div>
+    <div>
+      <label class="field-label">统一音色的 GM 音色号</label>
+      <select name="melody_export_program" class="input">
+        {% for name in gm_programs %}
+        <option value="{{ forloop.counter0 }}"
+          {% if config.melody_export_program == forloop.counter0 %}selected{% endif %}>{{ forloop.counter0 }} · {{ name }}</option>
+        {% endfor %}
+      </select>
+      <p class="field-hint">仅在「导出音色 = 统一音色」时生效，默认 0 · 大钢琴。</p>
+    </div>
+  </div>
+
   <h3>分析窗口</h3>
   <div class="settings-grid">
     <div>

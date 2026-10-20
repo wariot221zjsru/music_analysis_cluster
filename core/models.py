@@ -215,6 +215,25 @@ class SystemConfig(models.Model):
     melody_confidence_mid = models.FloatField(
         '置信度「中」下限', default=0.10,
         help_text='margin ≥ 该值标为「中」，低于它标为「低」（归属接近、需人工复核）。')
+    # —— 主旋律导出（节奏 / 音色）——
+    # 两张主旋律卡（⑨ 选轨 / ⑩ 逐段）共用；每张卡上还能单作品临时改。
+    melody_export_tempo_mode = models.CharField(
+        '导出节奏', max_length=16, default='original',
+        choices=[('original', '原始节奏'), ('changed', '统一 BPM')],
+        help_text='原始节奏：按谱面速度标记写入（变速也保留）；'
+                  '统一 BPM：整条旋律线用同一个速度（默认 120）。')
+    melody_export_bpm = models.IntegerField(
+        '统一 BPM', default=120,
+        help_text='仅在「导出节奏 = 统一 BPM」时生效，默认 120。')
+    melody_export_instrument_mode = models.CharField(
+        '导出音色', max_length=16, default='original',
+        choices=[('original', '各段原始音色'), ('changed', '统一音色')],
+        help_text='各段原始音色：每段用它自己声部的 MIDI 音色号（多段接力能听出换乐器）；'
+                  '统一音色：整条线用同一个音色（默认钢琴）。')
+    melody_export_program = models.IntegerField(
+        '统一音色的 GM 音色号', default=0,
+        help_text='仅在「导出音色 = 统一音色」时生效，0 = 大钢琴，'
+                  '可填 0–127 的任意 GM 音色号。')
     # —— 分析窗口 ——
     analysis_window_bars = models.IntegerField(
         '显著性时间窗（小节）', default=4,

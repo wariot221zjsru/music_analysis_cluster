@@ -5,6 +5,7 @@
 在不同声部间切换（"接力响"）。二者判定逻辑不同、可同时存在。
 阈值均来自 SystemConfig（管理员前端可调）。
 """
+from . import melody_export as mex
 from .scoredata import (
     ScoreData, build_measure_map, interval_seq, lcs_ratio, pitched_parts,
 )
@@ -35,11 +36,11 @@ def polyphony(data: ScoreData, config, voice_out: dict) -> dict:
 
 
 def _segment_pitch_seq(data: ScoreData, part_index: int, start_m: int, end_m: int):
-    measure_offsets, _, _ = build_measure_map(data)
-    s = measure_offsets.get(start_m, 0.0)
-    e = measure_offsets.get(end_m + 1, s + (end_m - start_m + 1) * 4.0)
-    return [max(ev.midi_pitches) for ev in data.parts[part_index].pitched_events
-            if s <= ev.offset < e]
+    # 与导出同一套区间换算：小节号查不到时按相邻小节推算，不退回 0.0
+    measure_offsets, _, bar_ql = build_measure_map(data)
+    s, e = mex.seg_range(data, measure_offsets, bar_ql, start_m, end_m)
+    return [max(ev.midi_pitches)
+            for ev in mex.events_in(data.parts[part_index], s, e)]
 
 
 def exchange(data: ScoreData, config, voice_out: dict) -> dict:

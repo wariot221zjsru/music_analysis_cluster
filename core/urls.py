@@ -9,6 +9,12 @@ urlpatterns = [
     path('pieces/<int:piece_id>/', views.piece_detail, name='piece_detail'),
     path('pieces/<int:piece_id>/run/', views.run_group, name='run_group'),
     path('pieces/<int:piece_id>/rerun/', views.rerun_step, name='rerun_step'),
+    # —— 主旋律重新导出（改节奏 / 音色，不重跑分析）——
+    path('pieces/<int:piece_id>/reexport/', views.reexport_melody,
+         name='reexport_melody'),
+    # —— 按当前设置直接下载主旋律 MIDI / MusicXML（不走静态 URL，不会被缓存）——
+    path('pieces/<int:piece_id>/melody-export/', views.melody_export_download,
+         name='melody_export_download'),
     path('pieces/<int:piece_id>/convert/', views.retry_convert, name='retry_convert'),
     path('pieces/<int:piece_id>/status/', views.piece_status, name='piece_status'),
     # —— 单步骤的历史运行记录（?step=xxx[&run=id]）——

@@ -1,6 +1,9 @@
 """核心视图：上传、作品详情、分析触发、状态轮询、管理员设置。"""
+import io
+import json
 import os
 import re
+import tempfile
 from pathlib import Path
 
 from django.contrib import messages
@@ -10,10 +13,14 @@ from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
+from .analysis import melody as melody_mod
+from .analysis import melody_export as mex
+from .analysis import melody_line as melody_line_mod
 from .analysis.pipeline import (
     GROUPS, STEP_DEPS, STEP_LABELS, start_convert_async, start_question_async,
     start_step_async, start_steps_async,
 )
+from .analysis.scoredata import parse_score
 from .forms import UploadForm
 from .models import AnalysisResult, AnalysisRun, Piece, QAQuestion, SystemConfig
 
@@ -118,12 +125,18 @@ def piece_detail(request, piece_id: int):
     if voice_parts:
         voice_note += '：' + '、'.join(
             f"{p.get('name')}（{p.get('instrument')}）" for p in voice_parts)
+    cfg = SystemConfig.get_config()
     return render(request, 'core/piece_detail.html', {
         'piece': piece,
         'step_labels': STEP_LABELS,
         'can_edit': _can_edit(request.user, piece),
         'convert_status': convert_result.status if convert_result else '',
         'voice_note': voice_note,
+        # GM 音色号 → 中文名（主旋律导出「统一音色」下拉用）
+        'gm_programs_json': json.dumps(mex.GM_PROGRAMS, ensure_ascii=False),
+        # 导出默认值（页面初次渲染时的选中项）
+        'export_defaults_json': json.dumps(mex.resolve_options(cfg),
+                                           ensure_ascii=False),
     })
 
 
@@ -424,6 +437,153 @@ def rerun_step(request, piece_id: int):
 
 @login_required
 @require_POST
+def reexport_melody(request, piece_id: int):
+    """按用户选的节奏 / 音色重新导出主旋律 MIDI / MusicXML。
+
+    不重跑分析：只把该步骤已有的分段结果按新的节奏与音色重新落盘，
+    导出的音符与重跑一致，变的只有速度和音色（这两样以前是写死的
+    120 BPM + 默认钢琴，听起来永远只有一种乐器）。
+    """
+    piece = get_object_or_404(Piece, pk=piece_id)
+    if not _can_edit(request.user, piece):
+        return JsonResponse({'ok': False, 'error': '无权操作该作品。'}, status=403)
+
+    step = request.POST.get('step', '')
+    if step not in ('melody_extraction', 'melody_line'):
+        return JsonResponse({'ok': False, 'error': f'不支持的步骤：{step}'},
+                            status=400)
+    result = piece.results.filter(step=step, status='done').order_by('-id').first()
+    if result is None or not result.output:
+        return JsonResponse(
+            {'ok': False, 'error': '该步骤还没有可复用的结果，请先运行一次。'},
+            status=400)
+    if not piece.musicxml_file or not piece.musicxml_file.storage.exists(
+            piece.musicxml_file.name):
+        return JsonResponse({'ok': False, 'error': '作品的 MusicXML 不存在，无法重新导出。'},
+                            status=400)
+
+    cfg = SystemConfig.get_config()
+    options = mex.resolve_options(cfg, request.POST.dict())
+    try:
+        data = parse_score(piece.musicxml_file.path)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({'ok': False, 'error': f'谱面读取失败：{exc}'},
+                            status=400)
+
+    try:
+        if step == 'melody_line':
+            segments = (result.output or {}).get('segments') or []
+            if not segments:
+                return JsonResponse(
+                    {'ok': False, 'error': '该步骤没有分段结果，请重新运行一次。'},
+                    status=400)
+            exports = melody_line_mod.export_segments(data, piece, segments, options)
+        else:
+            exports = melody_mod.export_again(data, piece, result.output, options)
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({'ok': False, 'error': f'导出失败：{exc}'}, status=500)
+    if not exports:
+        return JsonResponse({'ok': False, 'error': '没有可导出的主旋律结果。'},
+                            status=400)
+
+    # 换选项就换文件名（stem 带节奏 / 音色后缀），旧的那几份留在磁盘上不动：
+    # 历史归档里可能还引用着它们，删掉会把历史记录的下载链接打成 404。
+    out = dict(result.output or {})
+    out['exports'] = exports
+    out['export_options'] = options
+    out['export_options_label'] = mex.options_label(options)
+    out.pop('export_error', None)
+    result.output = out
+    result.save(update_fields=['output'])
+    return JsonResponse({'ok': True, 'exports': exports,
+                         'label': mex.options_label(options),
+                         'message': f'已按「{mex.options_label(options)}」重新导出。'})
+
+
+# 下载文件名里用的中文标签（旋律线有两版：原位 / 无缝拼接）
+_EXPORT_VARIANT_LABEL = {
+    ('melody_line', 'absolute'): '主旋律线原位',
+    ('melody_line', 'spliced'): '主旋律线拼接',
+}
+
+
+@login_required
+def melody_export_download(request, piece_id: int):
+    """按页面当前选的节奏 / 音色**直接下载**主旋律 MIDI / MusicXML。
+
+    与上面的 reexport 的区别：这条不改库、不覆盖已存文件，按当前选项**现算**
+    一份立刻以附件形式下发，文件名里就写着「96BPM / 小提琴」。走的是视图而不是
+    /media/ 静态 URL，所以不会被浏览器缓存成"上一次那份"，下载到手的一定是
+    当前选项的产物 —— 这是"按指定节奏 / 指定乐器导出 MIDI"的主入口。
+    """
+    piece = get_object_or_404(Piece, pk=piece_id)
+    if not _can_view(request.user, piece):
+        raise Http404('作品不存在或未公开。')
+
+    step = request.GET.get('step', '')
+    if step not in ('melody_line', 'melody_extraction'):
+        raise Http404('未知的主旋律导出步骤。')
+    fmt = request.GET.get('fmt', 'midi')
+    if fmt not in ('midi', 'musicxml'):
+        raise Http404('未知的导出格式。')
+
+    result = piece.results.filter(step=step, status='done').order_by('-id').first()
+    if result is None or not result.output:
+        raise Http404('该步骤还没有可导出的结果，请先运行一次。')
+    if not piece.musicxml_file or not piece.musicxml_file.storage.exists(
+            piece.musicxml_file.name):
+        raise Http404('作品的 MusicXML 不存在，无法导出。')
+
+    options = mex.resolve_options(SystemConfig.get_config(), request.GET.dict())
+    try:
+        data = parse_score(piece.musicxml_file.path)
+    except Exception as exc:  # noqa: BLE001
+        raise Http404(f'谱面读取失败：{exc}')
+
+    out = result.output or {}
+    if step == 'melody_line':
+        segments = out.get('segments') or []
+        if not segments:
+            raise Http404('该步骤没有分段结果，请先运行一次。')
+        built = melody_line_mod.build_export_parts(data, segments, options)
+        variant = request.GET.get('variant') or 'absolute'
+        pick = next((b for b in built if b['key'] == variant), built[0])
+        label = _EXPORT_VARIANT_LABEL.get((step, pick['key']), '主旋律线')
+    else:
+        built = melody_mod.build_export_parts(data, out, options)
+        if not built:
+            raise Http404('没有可导出的主旋律声部。')
+        cand = request.GET.get('candidate')
+        pick = built[0]
+        if cand:
+            pick = next((b for b in built if b['key'].endswith(str(cand))), built[0])
+        label = '主旋律声部'
+        if len(built) > 1:
+            label += f"（候选{pick['key'].split('_')[-1]}）"
+
+    try:
+        part = mex.finalize_part(pick['part'])
+        with tempfile.TemporaryDirectory() as td:
+            fp = os.path.join(td, f'export.{fmt}')
+            part.write(fmt, fp=fp)
+            with open(fp, 'rb') as fh:
+                payload = fh.read()
+    except Exception as exc:  # noqa: BLE001
+        raise Http404(f'导出失败：{exc}')
+
+    ext = '.mid' if fmt == 'midi' else '.musicxml'
+    filename = mex.download_filename(piece.title, label, options, ext)
+    ctype = ('audio/midi' if fmt == 'midi'
+             else 'application/vnd.recordare.musicxml+xml')
+    resp = FileResponse(io.BytesIO(payload), as_attachment=True,
+                        filename=filename, content_type=ctype)
+    # 明说别缓存：同一条 URL 换个选项内容就变了
+    resp['Cache-Control'] = 'no-store, must-revalidate'
+    return resp
+
+
+@login_required
+@require_POST
 def run_group(request, piece_id: int):
     """触发一组分析（rhythm / melody / extraction）。"""
     piece = get_object_or_404(Piece, pk=piece_id)
@@ -494,6 +654,14 @@ def system_settings(request):
                 request.POST['melody_confidence_high'])
             config.melody_confidence_mid = float(
                 request.POST['melody_confidence_mid'])
+            # 主旋律导出（两张卡共用的默认值）
+            config.melody_export_tempo_mode = (
+                request.POST.get('melody_export_tempo_mode') or 'original')
+            config.melody_export_bpm = int(request.POST.get('melody_export_bpm') or 120)
+            config.melody_export_instrument_mode = (
+                request.POST.get('melody_export_instrument_mode') or 'original')
+            config.melody_export_program = int(
+                request.POST.get('melody_export_program') or 0)
             config.analysis_window_bars = int(request.POST['analysis_window_bars'])
             config.chord_window = request.POST['chord_window']
             config.dsh_profile = request.POST['dsh_profile'].strip() or 'headless'
@@ -506,4 +674,5 @@ def system_settings(request):
             return redirect('core:settings')
         except (KeyError, ValueError) as exc:
             messages.error(request, f'参数有误：{exc}')
-    return render(request, 'core/settings.html', {'config': config})
+    return render(request, 'core/settings.html',
+                  {'config': config, 'gm_programs': mex.GM_PROGRAMS})

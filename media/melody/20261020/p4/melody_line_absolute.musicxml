@@ -19,12 +19,21 @@
     </scaling>
   </defaults>
   <part-list>
-    <score-part id="P8d640bcd9d91d9d5b410c57704c6cfc6">
-      <part-name />
+    <score-part id="P20f3500794653e30cae29db1dcfec99c">
+      <part-name>Accordion</part-name>
+      <part-abbreviation>Acc</part-abbreviation>
+      <score-instrument id="Ie3e330d23f5faedc31858cbd49a978d8">
+        <instrument-name>Accordion</instrument-name>
+        <instrument-abbreviation>Acc</instrument-abbreviation>
+      </score-instrument>
+      <midi-instrument id="Ie3e330d23f5faedc31858cbd49a978d8">
+        <midi-channel>1</midi-channel>
+        <midi-program>22</midi-program>
+      </midi-instrument>
     </score-part>
   </part-list>
   <!--=========================== Part 1 ===========================-->
-  <part id="P8d640bcd9d91d9d5b410c57704c6cfc6">
+  <part id="P20f3500794653e30cae29db1dcfec99c">
     <!--========================= Measure 1 ==========================-->
     <measure implicit="no" number="1">
       <attributes>
@@ -38,6 +47,15 @@
           <line>2</line>
         </clef>
       </attributes>
+      <direction>
+        <direction-type>
+          <metronome parentheses="no">
+            <beat-unit>quarter</beat-unit>
+            <per-minute>61</per-minute>
+          </metronome>
+        </direction-type>
+        <sound tempo="61" />
+      </direction>
       <note>
         <rest measure="yes" />
         <duration>40320</duration>

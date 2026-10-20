@@ -27,6 +27,7 @@ class PartInfo:
     instrument: str = ''            # 乐器名（可能为空）
     is_voice: bool = False          # 是否人声类音色
     is_percussion: bool = False     # 是否打击乐声部
+    midi_program: object = None     # MIDI 音色号（谱面读不到时为 None）
     events: List[NoteEvent] = field(default_factory=list)
 
     @property
@@ -191,30 +192,34 @@ def parse_score(musicxml_path: str) -> ScoreData:
     if not score.recurse().getElementsByClass(stream.Measure):
         score = score.makeNotation(inPlace=False)
 
-    # ---- 以第一个含小节的 Part 为基准建立 {小节号: 全局偏移} ----
+    # ---- 建立 {小节号: 全局偏移}，取**所有**声部的并集 ----
+    # 重要：不能只用第一个含小节的声部作基准。MuScriptor 转录出的谱里，
+    # 第一个声部可能是提前收尾的鼓轨，若只取它，末段小节号会查不到偏移，
+    # 下游用 .get(m, 0.0) 兜底就会把段起点当成全曲开头，导出整段错位。
     measure_offsets = {}
     time_signatures = []
     base_part = None
     for part in score.parts:
         measures = part.getElementsByClass(stream.Measure)
-        if measures:
+        if not measures:
+            continue
+        if base_part is None:
             base_part = part
+        part_offset = 0.0
+        try:
+            part_offset = float(part.getOffsetInHierarchy(score))
+        except Exception:
             part_offset = 0.0
-            try:
-                part_offset = float(part.getOffsetInHierarchy(score))
-            except Exception:
-                part_offset = 0.0
-            for m in measures:
-                g = part_offset + float(m.offset)
-                if m.number not in measure_offsets or g < measure_offsets[m.number]:
-                    measure_offsets[m.number] = g
-                ts = m.timeSignature
-                if ts is not None:
-                    entry = {'measure': m.number, 'numerator': ts.numerator,
-                             'denominator': ts.denominator}
-                    if entry not in time_signatures:
-                        time_signatures.append(entry)
-            break
+        for m in measures:
+            g = part_offset + float(m.offset)
+            if m.number not in measure_offsets or g < measure_offsets[m.number]:
+                measure_offsets[m.number] = g
+            ts = m.timeSignature
+            if ts is not None:
+                entry = {'measure': m.number, 'numerator': ts.numerator,
+                         'denominator': ts.denominator}
+                if entry not in time_signatures:
+                    time_signatures.append(entry)
     if base_part is None:  # 理论上不可达（上面已 makeNotation）
         raise ValueError('谱面无小节结构，且 makeNotation 失败。')
 
@@ -262,6 +267,11 @@ def parse_score(musicxml_path: str) -> ScoreData:
             if inst is not None:
                 info.instrument = (getattr(inst, 'instrumentName', None)
                                    or getattr(inst, 'partName', '') or '')
+                # MIDI 音色号：导出"各段原始音色"时按它给每段配乐器。
+                # MusicXML 里的 <midi-instrument><midi-program> 会被 music21 读回来。
+                prog = getattr(inst, 'midiProgram', None)
+                if prog is not None:
+                    info.midi_program = int(prog)
         except Exception:
             info.instrument = ''
 

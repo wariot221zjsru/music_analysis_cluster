@@ -12,6 +12,7 @@
 跑完自动清理临时 DB / media 产物。
 """
 import os
+import shutil
 import sys
 
 os.environ['DJANGO_SETTINGS_MODULE'] = 'smoke_settings'
@@ -129,7 +130,17 @@ def prepare():
     call_command('migrate', '--run-syncdb', verbosity=0)
     User.objects.filter(username='smoke').delete()
     User.objects.create_user('smoke', password='smoke123456')
-    print('[准备] SQLite 迁移 + 测试用户 …… OK')
+    # 所有 smoke 脚本共用 _smoke_db.sqlite3，配置会串味（例如别的脚本 POST
+    # /settings/ 时漏传 melody_voice_priority，就会被置成 False）。
+    # 这里先把本脚本依赖的字段复位，保证每次跑都从默认值出发。
+    cfg = SystemConfig.get_config()
+    cfg.melody_voice_priority = True
+    cfg.melody_segment_min_bars = 2
+    cfg.melody_confidence_high = 0.25
+    cfg.melody_confidence_mid = 0.10
+    cfg.analysis_window_bars = 4
+    cfg.save()
+    print('[准备] SQLite 迁移 + 测试用户 + 配置复位 …… OK')
 
 
 def make_piece(user, title, data: bytes, filename='song.musicxml'):
@@ -352,7 +363,11 @@ def main():
 
 def cleanup(pieces):
     connection.close()
-    media = settings.MEDIA_ROOT
+    media = str(settings.MEDIA_ROOT)
+    # 只删**本次测试自己造出来的**作品产物。
+    # 以前这里 walk 整个 media/melody/ 删文件 —— 而 smoke_settings 的 MEDIA_ROOT
+    # 就是真实项目的 media，结果把用户作品的导出产物一起删光，页面上点下载就 404。
+    # 现在 MEDIA_ROOT 已隔离到 _smoke_media，这里再按 piece id 精确清理，双保险。
     for piece in pieces:
         for rel in (piece.musicxml_file.name, piece.midi_file.name,
                     piece.source_file.name):
@@ -361,14 +376,13 @@ def cleanup(pieces):
             p = os.path.join(media, rel)
             if os.path.exists(p):
                 os.remove(p)
-    # 旋律导出产物在 media/melody/ 下，整目录删掉
-    melody_dir = os.path.join(media, 'melody')
-    for root, _dirs, files in os.walk(melody_dir):
-        for f in files:
-            try:
-                os.remove(os.path.join(root, f))
-            except OSError:
-                pass
+        # 旋律导出产物：media/melody/<日期>/p<id>/
+        pdir = os.path.join(media, 'melody')
+        if os.path.isdir(pdir):
+            for day in os.listdir(pdir):
+                d = os.path.join(pdir, day, f'p{piece.id}')
+                if os.path.isdir(d):
+                    shutil.rmtree(d, ignore_errors=True)
     import time
     for _ in range(5):
         if not os.path.exists(DB_FILE):

@@ -161,7 +161,16 @@ const STEP_ORDER = ['convert', 'rhythm_grid', 'rhythm_pattern', 'instrumentation
   'melody_extraction', 'melody_line', 'melody_shape'];
 let polling = null;
 let reloadAfterConvert = false;
+/* 重新导出后导出文件的内容变了，给下载 / 试听链接加个版本号，
+   免得浏览器把上一次那份（旧节奏 / 旧音色）当成缓存直接给出。 */
+let EXPORT_VER = 0;
+/* /media/ 下的导出文件加版本号，绕开浏览器缓存 */
+function mediaUrl(p) {
+  return '/media/' + p + (EXPORT_VER ? '?v=' + EXPORT_VER : '');
+}
 const CAN_EDIT = {{ can_edit|yesno:'true,false' }};
+const GM_PROGRAMS = {{ gm_programs_json|safe }};
+const EXPORT_DEFAULTS = {{ export_defaults_json|safe }};
 
 async function fetchStatus() {
   const res = await fetch(`/pieces/${PIECE_ID}/status/`);
@@ -417,6 +426,261 @@ function tableFrom(rows, headers) {
   return `<table class="table small-table"><thead>${h}</thead><tbody>${b}</tbody></table>`;
 }
 
+/* ---------- 主旋律导出设置（节奏 / 音色） ----------
+   以前导出写死 120 BPM + 默认钢琴，听起来永远只有一种乐器。
+   这里让用户自己选：原始节奏 or 统一 BPM（默认 120，可填 20–300）；
+   各段原始音色（多段接力能听出换乐器） or 统一音色（默认大钢琴，可任选 GM 0–127）。
+   改完点「应用」只重新落盘，不重跑分析。                                */
+function curOptions(o) {
+  const d = (o && o.export_options) ? o.export_options : EXPORT_DEFAULTS;
+  return {
+    tempo_mode: d.tempo_mode || 'original',
+    bpm: d.bpm || 120,
+    instrument_mode: d.instrument_mode || 'original',
+    program: (d.program === undefined ? 0 : d.program),
+  };
+}
+
+function gmOptions(sel) {
+  let s = '';
+  for (let i = 0; i < GM_PROGRAMS.length; i++) {
+    s += `<option value="${i}"${i === sel ? ' selected' : ''}>${i} · ${GM_PROGRAMS[i]}</option>`;
+  }
+  return s;
+}
+
+/* 导出文件旁的 ▶ 试听按钮：直接在浏览器里听这次导出的旋律，
+   用来确认「统一音色 / 自定义乐器」到底生效了没有（下载卡的 ▶ 播的是整曲原 MIDI，
+   跟主旋律导出无关，别拿它验证）。 */
+function playBtn(url, label) {
+  if (!url) return '';
+  return `<button class="btn btn-outline btn-sm midi-play" type="button"
+    data-midi-url="${mediaUrl(url)}" title="试听${label}（合成音，仅核对用）">▶ ${label}</button>`;
+}
+
+/* 「按当前设置下载」：现算一份带当前节奏 / 音色的 MIDI，直接下发，
+   不写库、不走 /media/（也就不会被缓存成上一次那份）。 */
+function dlUrl(step, fmt, variant, candidate) {
+  const pick = nm => document.querySelector(`[name="${nm}"]:checked`);
+  const val = nm => { const el = document.querySelector(`[name="${nm}"]`); return el ? el.value : ''; };
+  const tm = pick(`tempo_mode_${step}`), im = pick(`inst_mode_${step}`);
+  const q = new URLSearchParams({
+    step: step,
+    fmt: fmt || 'midi',
+    tempo_mode: tm ? tm.value : 'original',
+    bpm: val(`bpm_${step}`) || 120,
+    instrument_mode: im ? im.value : 'original',
+    program: val(`program_${step}`) || 0,
+  });
+  if (variant) q.set('variant', variant);
+  if (candidate) q.set('candidate', candidate);
+  return `/pieces/${PIECE_ID}/melody-export/?${q.toString()}`;
+}
+
+/* 下载按钮（点击下方才按当时的选项拼 URL） */
+function dlBtn(step, fmt, label, variant, primary) {
+  return `<button type="button" class="btn ${primary ? 'btn-primary' : 'btn-outline'} btn-sm"
+    data-dl-export="${step}" data-dl-fmt="${fmt}"
+    ${variant ? `data-dl-variant="${variant}"` : ''}>${label}</button>`;
+}
+
+function exportPanel(step, o, hasExport) {
+  // 没有导出结果就什么都不显示；下载本身只要能看这个作品就行（只读也能下），
+  // 改节奏 / 音色、写回结果才要编辑权。
+  if (!hasExport) return '';
+  const c = curOptions(o);
+  const label = (o && o.export_options_label)
+    ? o.export_options_label
+    : `${c.tempo_mode === 'original' ? '原始节奏' : '统一 ' + c.bpm + ' BPM'} · `
+      + (c.instrument_mode === 'original'
+         ? '各段原始音色' : `统一音色：${GM_PROGRAMS[c.program] || c.program}`);
+  const desc = [];
+  if (o && o.exports) {
+    const ex = o.exports;
+    const t = (ex.absolute && ex.absolute.tempo_desc) || ex.tempo_desc;
+    const i = (ex.absolute && ex.absolute.instrument_desc) || ex.instrument_desc;
+    if (t) desc.push('节奏：' + t);
+    if (i) desc.push('音色：' + i);
+  }
+  /* 旋律线有「原位 / 无缝拼接」两版；选轨在复调时有多个候选 —— 下载时选一下 */
+  let variantPick = '', candPick = '';
+  if (step === 'melody_line') {
+    variantPick = `<select class="export-sel" name="dl_variant_${step}">
+      <option value="absolute">原位版</option>
+      <option value="spliced">无缝拼接版</option></select> `;
+  } else {
+    // 单份导出时 exports 就是 {midi, musicxml,…}（扁平），别把它当成多个候选
+    const flat = !!(o && o.exports && o.exports.midi);
+    const keys = flat ? [] : Object.keys((o && o.exports) || {});
+    if (keys.length > 1) {
+      candPick = `<select class="export-sel" name="dl_cand_${step}">`
+        + keys.map(k => `<option value="${(k.match(/(\d+)$/) || ['', ''])[1]}">${escapeHtml(k)}</option>`)
+          .join('') + `</select> `;
+    }
+  }
+  /* 下载按钮直接摆在卡片上（不藏在折叠区里），改节奏 / 音色的选项才收进折叠区 */
+  const bar = `<div class="export-bar">
+      <b>按指定节奏 / 乐器导出</b>
+      <span class="muted small" data-export-label="${step}">当前：${escapeHtml(label)}</span>
+      ${variantPick}${candPick}
+      ${dlBtn(step, 'midi', '⬇ MIDI', null, true)}
+      ${dlBtn(step, 'musicxml', '⬇ MusicXML')}
+      ${CAN_EDIT ? `<button type="button" class="btn btn-outline btn-sm"
+        data-open-export="${step}">⚙ 改节奏 / 音色</button>` : ''}
+      <span class="midi-status" data-export-status="${step}"></span>
+    </div>`;
+  if (!CAN_EDIT) return bar;      // 只读用户：能下载，不能改设置
+  return bar + `<details class="export-settings" data-export-step="${step}">
+    <summary>节奏 / 音色设置<span class="muted small" data-export-label="${step}">　当前：${escapeHtml(label)}</span></summary>
+    <div class="export-form">
+      <div class="export-row">
+        <b>节奏</b>
+        <label class="export-opt"><input type="radio" name="tempo_mode_${step}" value="original"
+          ${c.tempo_mode === 'original' ? 'checked' : ''}> 原始节奏（按谱面速度，变速也保留）</label>
+        <label class="export-opt"><input type="radio" name="tempo_mode_${step}" value="changed"
+          ${c.tempo_mode === 'changed' ? 'checked' : ''}> 统一 BPM
+          <input type="number" class="export-num" name="bpm_${step}" min="20" max="300"
+            value="${c.bpm}" ${c.tempo_mode === 'changed' ? '' : 'disabled'}> <span class="muted small">默认 120</span></label>
+      </div>
+      <div class="export-row">
+        <b>音色</b>
+        <label class="export-opt"><input type="radio" name="inst_mode_${step}" value="original"
+          ${c.instrument_mode === 'original' ? 'checked' : ''}> 各段原始音色（每段用它自己声部的音色）</label>
+        <label class="export-opt"><input type="radio" name="inst_mode_${step}" value="changed"
+          ${c.instrument_mode === 'changed' ? 'checked' : ''}> 统一音色
+          <select class="export-sel" name="program_${step}"
+            ${c.instrument_mode === 'changed' ? '' : 'disabled'}>${gmOptions(c.program)}</select>
+          <span class="muted small">默认 0 · 大钢琴</span></label>
+      </div>
+      ${desc.length ? `<p class="muted small">上一次导出：${escapeHtml(desc.join('　'))}</p>` : ''}
+      <div class="export-row export-actions">
+        <button type="button" class="btn btn-outline btn-sm"
+          data-apply-export="${step}">写回结果（替换 ⬇ 链接与 ▶ 试听）</button>
+      </div>
+      <p class="muted small"><b>⬇ 下载</b>：按上面选的节奏 / 音色现算一份立刻下发，
+        文件名里就写着速度与乐器（如「…_96BPM_小提琴.mid」），不经过缓存，
+        也不改动已有文件。<b>写回结果</b>：把按当前设置生成的 MIDI / MusicXML
+        存回本步骤，卡片上的 ⬇ 链接与 ▶ 试听换成这一份（不重跑分析，音符不变）。</p>
+    </div>
+  </details>`;
+}
+
+/* 当前选项的一句话说明（选项一改就跟着变，不用等下一次渲染） */
+function optionsLabelNow(step) {
+  const pick = nm => document.querySelector(`[name="${nm}"]:checked`);
+  const val = nm => { const el = document.querySelector(`[name="${nm}"]`); return el ? el.value : ''; };
+  const tm = pick(`tempo_mode_${step}`), im = pick(`inst_mode_${step}`);
+  if (!tm || !im) return '';
+  const bpm = parseInt(val(`bpm_${step}`), 10) || 120;
+  const prog = parseInt(val(`program_${step}`), 10) || 0;
+  return (tm.value === 'original' ? '原始节奏' : `统一 ${bpm} BPM`) + ' · '
+    + (im.value === 'original' ? '各段原始音色'
+       : `统一音色：${GM_PROGRAMS[prog] || prog}（GM ${prog}）`);
+}
+
+/* 选项一改：启用 / 禁用对应的输入控件，并把「当前：…」改掉 */
+document.addEventListener('change', function (e) {
+  const n = e.target.name || '';
+  let step = null;
+  if (n.startsWith('tempo_mode_')) {
+    step = n.slice('tempo_mode_'.length);
+    const num = document.querySelector(`[name="bpm_${step}"]`);
+    if (num) num.disabled = (e.target.value !== 'changed');
+  } else if (n.startsWith('inst_mode_')) {
+    step = n.slice('inst_mode_'.length);
+    const sel = document.querySelector(`[name="program_${step}"]`);
+    if (sel) sel.disabled = (e.target.value !== 'changed');
+  } else if (n.startsWith('bpm_')) {
+    step = n.slice('bpm_'.length);
+  } else if (n.startsWith('program_')) {
+    step = n.slice('program_'.length);
+  }
+  if (!step) return;
+  const txt = optionsLabelNow(step);
+  if (txt) {
+    document.querySelectorAll(`[data-export-label="${step}"]`).forEach(el => {
+      el.textContent = '当前：' + txt;
+    });
+  }
+});
+
+/* 点「⚙ 改节奏 / 音色」→ 展开下面的设置区 */
+document.addEventListener('click', function (e) {
+  const btn = e.target.closest('[data-open-export]');
+  if (!btn) return;
+  const step = btn.dataset.openExport;
+  const det = document.querySelector(`details[data-export-step="${step}"]`);
+  if (det) { det.open = true; det.scrollIntoView({block: 'nearest'}); }
+});
+
+/* 点「按当前设置下载」→ 直接 GET 那份带指定节奏 / 乐器的 MIDI */
+document.addEventListener('click', function (e) {
+  const btn = e.target.closest('[data-dl-export]');
+  if (!btn) return;
+  const step = btn.dataset.dlExport;
+  const fmt = btn.dataset.dlFmt || 'midi';
+  let variant = btn.dataset.dlVariant || '';
+  let cand = '';
+  if (!variant) {
+    const vs = document.querySelector(`[name="dl_variant_${step}"]`);
+    if (vs) variant = vs.value;
+  }
+  const cs = document.querySelector(`[name="dl_cand_${step}"]`);
+  if (cs) cand = cs.value;
+  const status = document.querySelector(`[data-export-status="${step}"]`);
+  if (status) { status.textContent = '正在生成…'; status.className = 'midi-status'; }
+  window.location.href = dlUrl(step, fmt, variant, cand);
+});
+
+/* 点「应用」→ POST 重新导出 */
+document.addEventListener('click', async function (e) {
+  const btn = e.target.closest('[data-apply-export]');
+  if (!btn) return;
+  const step = btn.dataset.applyExport;
+  const status = document.querySelector(`[data-export-status="${step}"]`);
+  const pick = nm => document.querySelector(`[name="${nm}"]:checked`);
+  const val = nm => { const el = document.querySelector(`[name="${nm}"]`); return el ? el.value : ''; };
+  const tm = pick(`tempo_mode_${step}`), im = pick(`inst_mode_${step}`);
+  if (!tm || !im) { if (status) status.textContent = '选项未就绪，请刷新页面。'; return; }
+  const body = new URLSearchParams({
+    step: step,
+    tempo_mode: tm.value,
+    bpm: val(`bpm_${step}`) || 120,
+    instrument_mode: im.value,
+    program: val(`program_${step}`) || 0,
+  });
+  btn.disabled = true;
+  if (status) { status.textContent = '正在导出…'; status.className = 'midi-status'; }
+  try {
+    const res = await fetch(`/pieces/${PIECE_ID}/reexport/`, {
+      method: 'POST',
+      headers: {'X-CSRFToken': '{{ csrf_token }}',
+                'Content-Type': 'application/x-www-form-urlencoded'},
+      body: body.toString(),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      if (status) { status.textContent = data.error || '导出失败'; status.className = 'midi-status midi-status-error'; }
+    } else {
+      if (status) status.textContent = data.message || '已重新导出。';
+      // 文件内容变了：换掉链接版本号 + 清掉试听缓存，
+      // 否则下载到 / 听到的还是上一次那份旧节奏旧音色。
+      EXPORT_VER += 1;
+      if (window.MidiPlayer) {
+        window.MidiPlayer.invalidatePrefix(`/media/melody/`);
+      }
+      // 重新拉一次状态，刷新下载链接与 ▶ 试听按钮
+      const d = await fetchStatus();
+      renderSteps(d);
+      bindPlayers();
+    }
+  } catch (err) {
+    if (status) { status.textContent = '请求失败：' + err; status.className = 'midi-status midi-status-error'; }
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 /* ---------- 各步骤的结果渲染 ---------- */
 const RENDERERS = {
   convert(o) {
@@ -483,18 +747,29 @@ const RENDERERS = {
   },
   melody_extraction(o) {
     const rows = (o.candidates || []).map(c => [c.part_name, (c.confidence * 100).toFixed(1) + '%']);
+    const keys = Object.keys(o.exports || {});
     let exports = '';
     if (o.exports && o.exports.midi) {
       exports = `<div class="kv"><b>导出：</b>
-        <a class="tag tag-link" href="/media/${o.exports.midi}">主旋律 MIDI ⬇</a>
-        <a class="tag tag-link" href="/media/${o.exports.musicxml}">主旋律 MusicXML ⬇</a></div>`;
+        <a class="tag tag-link" href="${mediaUrl(o.exports.midi)}">主旋律 MIDI ⬇</a>
+        <a class="tag tag-link" href="${mediaUrl(o.exports.musicxml)}">主旋律 MusicXML ⬇</a>
+        ${playBtn(o.exports.midi, '试听')}</div>`;
+    } else if (keys.length) {
+      // 复调分支：多个候选各有一份导出
+      exports = '<div class="kv"><b>导出（各候选）：</b>' + keys.map(k => {
+        const f = o.exports[k];
+        const n = (k.match(/(\d+)$/) || [])[1] || '';
+        return `<a class="tag tag-link" href="${mediaUrl(f.midi)}">${escapeHtml(k)} MIDI ⬇</a>`
+          + playBtn(f.midi, n ? `候选${n}` : '试听');
+      }).join(' ') + '</div>';
     }
     return `<p class="scope-note">口径：<b>选轨</b>——回答"整曲哪个声部是主旋律"。
       先按阈值判定是否为主旋律交接，是才允许按归属时间线换声部；未判定为交接时
       全曲只选一个声部（<b>器乐前奏 / 间奏可能因此不计入</b>）。
       逐段口径见下一张卡「主旋律线追踪（逐段）」。</p>` +
       `<div class="kv"><b>模式：</b><span class="highlight">${o.mode}</span></div>` +
-      tableFrom(rows, ['候选声部', '置信度']) + exports;
+      tableFrom(rows, ['候选声部', '置信度']) + exports +
+      exportPanel('melody_extraction', o, keys.length > 0);
   },
   melody_line(o) {
     const segs = o.segments || [];
@@ -511,12 +786,17 @@ const RENDERERS = {
     const ex = o.exports || {};
     if (ex.absolute && ex.absolute.midi) {
       exports = `<div class="kv"><b>导出：</b>
-        <a class="tag tag-link" href="/media/${ex.absolute.midi}">原位 MIDI ⬇</a>
-        <a class="tag tag-link" href="/media/${ex.absolute.musicxml}">原位 MusicXML ⬇</a>
-        <a class="tag tag-link" href="/media/${ex.spliced.midi}">无缝拼接 MIDI ⬇</a>
-        <a class="tag tag-link" href="/media/${ex.spliced.musicxml}">无缝拼接 MusicXML ⬇</a></div>
+        <a class="tag tag-link" href="${mediaUrl(ex.absolute.midi)}">原位 MIDI ⬇</a>
+        <a class="tag tag-link" href="${mediaUrl(ex.absolute.musicxml)}">原位 MusicXML ⬇</a>
+        ${playBtn(ex.absolute.midi, '试听原位')}
+        </div>
+        <div class="kv">
+        <a class="tag tag-link" href="${mediaUrl(ex.spliced.midi)}">无缝拼接 MIDI ⬇</a>
+        <a class="tag tag-link" href="${mediaUrl(ex.spliced.musicxml)}">无缝拼接 MusicXML ⬇</a>
+        ${playBtn(ex.spliced.midi, '试听拼接')}</div>
         <p class="muted small">原位版各段留在真实小节位置（人声没唱的地方留白）；
-        拼接版首尾相接，适合当一条旋律线听 / 导入 DAW。</p>`;
+        拼接版首尾相接，适合当一条旋律线听 / 导入 DAW。
+        ▶ 试听播的就是这份导出的旋律，可用来确认统一音色 / 自定义乐器是否生效。</p>`;
     }
     const winRows = (o.windows || []).map(w => [
       `${w.start_measure}–${w.end_measure}`,
@@ -542,6 +822,7 @@ const RENDERERS = {
           + `（${(cov.ratio * 100).toFixed(1)}%）`
           + (cov.gap_bars ? `　未覆盖 ${cov.gap_bars} 小节（整窗静默）` : '') + '</div>'
         : '') + exports +
+      exportPanel('melody_line', o, !!(ex.absolute && ex.absolute.midi)) +
       (o.export_error ? `<div class="alert alert-warn">导出失败：${escapeHtml(o.export_error)}</div>` : '') +
       (o.note ? `<p class="muted small">${escapeHtml(o.note)}</p>` : '') +
       (winRows.length ? `<details class="melody-detail">
@@ -564,11 +845,17 @@ function renderOutput(step, output) {
   return fn ? fn(output) : jpre(output);
 }
 
+/* 步骤卡是动态渲染的，导出链接旁新生成的 ▶ 试听按钮要重新绑定一次 */
+function bindPlayers() {
+  if (window.MidiPlayer && window.MidiPlayer.bindAll) window.MidiPlayer.bindAll();
+}
+
 /* ---------- 轮询 ---------- */
 async function poll() {
   try {
     const data = await fetchStatus();
     const running = renderSteps(data);
+    bindPlayers();
     if (!running && polling) {
       clearInterval(polling);
       polling = null;
