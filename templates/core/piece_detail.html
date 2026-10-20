@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% load static %}
 {% block title %}{{ piece.title }} · 分析详情{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -47,6 +48,10 @@
       {% if piece.midi_file %}
       <a class="btn btn-outline"
          href="{% url 'core:download_midi' piece.id %}" download>⬇ 下载 MIDI</a>
+      <button class="btn btn-outline btn-sm midi-play" type="button"
+              data-midi-url="{% url 'core:download_midi' piece.id %}"
+              title="在浏览器内试听已转换的 MIDI（合成音，仅供核对）">▶ 播放</button>
+      <span class="midi-status" data-midi-status></span>
       {% else %}
       <span class="muted small">MIDI 尚未生成</span>
       {% endif %}
@@ -134,6 +139,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{% static 'js/midi_player.js' %}"></script>
 <script>
 const PIECE_ID = {{ piece.id }};
 const STEP_LABELS = {

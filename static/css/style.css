@@ -315,6 +315,15 @@ body {
 .download-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 .download-card p { margin: 10px 0 0; }
 
+/* ---------- MIDI 试听（与下载按钮同一行，尽量少占空间） ---------- */
+.midi-play { min-width: 76px; }
+.midi-play.is-playing {
+  background: var(--accent-bg); border-color: var(--primary-dark);
+  color: var(--primary-dark);
+}
+.midi-status { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.midi-status-error { color: var(--error); }
+
 /* ---------- 顶部左右横排：转换结果下载 | 更高层分析 ---------- */
 .top-cards {
   display: grid;
