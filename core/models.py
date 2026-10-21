@@ -215,6 +215,21 @@ class SystemConfig(models.Model):
     melody_confidence_mid = models.FloatField(
         '置信度「中」下限', default=0.10,
         help_text='margin ≥ 该值标为「中」，低于它标为「低」（归属接近、需人工复核）。')
+    # —— 形态资格层（可选，默认关）——
+    # 「形态决定有没有资格，显著性决定谁更强」：形态只做否决，不参与加分。
+    melody_shape_gate = models.BooleanField(
+        '形态（旋律轮廓）决定资格', default=False,
+        help_text='开启后逐段追踪多一道资格筛选：声部的旋律轮廓形态'
+                  '（级进比例 / 拱形度 / 轮廓平滑度）达不到下限就失去当主旋律的资格，'
+                  '改由段内形态合格且显著性最高的声部顶上 —— 用来挡住分解和弦、'
+                  '阿尔贝蒂低音、固定音型这类"周期音型"被误判成主旋律'
+                  '（它们的动机重复度极高，单看显著性容易赢）。'
+                  '关闭则只看显著性，与以前完全一致。')
+    melody_shape_min_score = models.FloatField(
+        '形态资格下限', default=0.35,
+        help_text='仅在上面开启时生效。形态分（0–1）= 级进比×0.7 + 拱形度×0.15 '
+                  '+ 轮廓平滑度×0.15，低于该值即失去资格。'
+                  '段内音符太少不足以统计轮廓时不作判定，一律放行。')
     # —— 主旋律导出（节奏 / 音色）——
     # 两张主旋律卡（⑨ 选轨 / ⑩ 逐段）共用；每张卡上还能单作品临时改。
     melody_export_tempo_mode = models.CharField(

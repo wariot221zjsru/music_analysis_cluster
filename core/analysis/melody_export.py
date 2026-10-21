@@ -106,32 +106,119 @@ def options_label(options: dict) -> str:
     return f'{tempo} · {inst}'
 
 
-def stem_with_options(stem: str, options: dict) -> str:
-    """导出文件名（stem）带上节奏 / 音色选项。
+def shape_stem_tag(shape_gate: bool, threshold=None) -> str:
+    """形态资格层的文件名标记：开 → ``shape0.35``，关 → ``''``（与以前同名）。
+
+    开与不开是两种不同口径的提取结果（可能归属到不同声部），写同一个文件名
+    会互相覆盖 —— 开了形态层跑完再关掉重跑，前一份就没了，历史归档里那次
+    运行的下载链接也就指向了别人的文件。带上标记后两者各存各的。
+    """
+    if not shape_gate:
+        return ''
+    try:
+        return f'shape{float(threshold):g}'
+    except (TypeError, ValueError):
+        return 'shape'
+
+
+def shape_label(shape_gate: bool, threshold=None) -> str:
+    """下载文件名里用的可读形态标记：开 → ``形态0.35``，关 → ``''``。
+
+    与 shape_stem_tag 的区别只是给人看的（一个中文、一个英文短标记）。
+    """
+    if not shape_gate:
+        return ''
+    try:
+        return f'形态{float(threshold):g}'
+    except (TypeError, ValueError):
+        return '形态'
+
+
+def run_stem_tag(seq) -> str:
+    """运行序号标记：``r1`` / ``r2`` … 与「历史运行」里的「第 N 次」对得上。"""
+    try:
+        return f'r{max(int(seq), 1)}'
+    except (TypeError, ValueError):
+        return 'r1'
+
+
+def time_stem_tag() -> str:
+    """时间兜底标记（旧结果没有运行序号时用），保证每次落盘的文件名都不同。"""
+    from django.utils import timezone
+    return 't' + timezone.localtime().strftime('%m%d%H%M%S')
+
+
+def next_run_seq(piece, step: str) -> int:
+    """该步骤下一次运行会归档成的序号（1 起，与历史表里的 seq 一致）。
+
+    只用来给导出文件编号，查不到（比如还没建表 / 非 ORM 场景）就退回 1。
+    """
+    try:
+        from ..models import AnalysisRun
+        if piece is None or getattr(piece, 'pk', None) is None:
+            return 1
+        last = (AnalysisRun.objects.filter(piece=piece, step=step)
+                .order_by('-seq').first())
+        return (last.seq + 1) if last else 1
+    except Exception:  # noqa: BLE001 —— 编号失败不该拖垮导出
+        return 1
+
+
+def export_run_tag(output: dict | None, piece, step: str) -> str:
+    """重新导出（写回结果）时用的运行标记。
+
+    沿用本次结果里记下的运行序号：同一份结果反复改节奏 / 音色，换的是选项
+    后缀（BPM / GM 号）而不是运行编号，于是"第 N 次"那一份始终只有一份，
+    历史归档里那次运行的链接也一直指向它自己的文件。
+    老结果里没记序号时用时间戳兜底，保证不与任何已有文件重名。
+    """
+    seq = (output or {}).get('export_run_seq') if isinstance(output, dict) else None
+    if seq:
+        return run_stem_tag(seq)
+    return time_stem_tag()
+
+
+def stem_with_options(stem: str, options: dict, shape_tag: str = '',
+                      run_tag: str = '') -> str:
+    """导出文件名（stem）带上形态层标记 + 节奏 / 音色选项 + 运行序号。
 
     以前所有选项都落同一个文件名（如 melody_line_absolute.mid），重新导出只是
     覆盖同名文件 —— 下载链接的 URL 一个字都没变，浏览器常常直接给缓存里的旧
     文件，于是"明明选了小提琴、下载的还是钢琴"。带上选项后 URL 随选项变化，
     既避开缓存，也方便同时留着几个版本对照。
+
+    再加两段：
+      shape_tag —— 开了「形态决定资格」的提取单独一份文件（口径不同、归属
+                   可能不同，不能和没开的那份互相覆盖）；
+      run_tag   —— 每次运行一份（``r1`` / ``r2``…），重跑不再覆盖上一次的
+                   产物，历史归档里每一次运行都能下到它自己那份。
     """
     tempo = ('orig-tempo' if options['tempo_mode'] == 'original'
              else f'{int(options["bpm"])}bpm')
     inst = ('orig-inst' if options['instrument_mode'] == 'original'
             else f'gm{int(options["program"])}')
-    return f'{stem}__{tempo}__{inst}'
+    parts = [stem]
+    if shape_tag:
+        parts.append(shape_tag)
+    parts += [tempo, inst]
+    if run_tag:
+        parts.append(run_tag)
+    return '__'.join(parts)
 
 
 def download_filename(title: str, kind_label: str, options: dict,
-                      ext: str = '.mid') -> str:
+                      ext: str = '.mid', shape_tag: str = '') -> str:
     """给"按当前设置直接下载"用的可读文件名。
 
     例：Potong Bebek Angsa_主旋律线_96BPM_小提琴.mid
+    开了形态资格层时 kind_label 后面多一段「形态0.35」，下下来的两份一眼能分清。
     """
     tempo = ('原始节奏' if options['tempo_mode'] == 'original'
              else f'{int(options["bpm"])}BPM')
     inst = ('各段原始音色' if options['instrument_mode'] == 'original'
             else gm_name(options['program']))
-    base = f'{title}_{kind_label}_{tempo}_{inst}{ext}'
+    label = f'{kind_label}_{shape_tag}' if shape_tag else kind_label
+    base = f'{title}_{label}_{tempo}_{inst}{ext}'
     # 去掉文件名里不安全的字符（Windows 不允许 \ / : * ? " < > |）
     return re.sub(r'[\\/:*?"<>|\r\n\t]', '_', base)[:120]
 

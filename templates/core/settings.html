@@ -66,6 +66,37 @@
     </div>
   </div>
 
+  <h3>主旋律线追踪 · 形态资格层（可选）</h3>
+  <p class="field-hint">
+    <b>形态决定「有没有资格」，显著性决定「谁更强」</b>——形态只做否决，
+    不参与显著性加分、不改置信度。用来挡住分解和弦、阿尔贝蒂低音、固定音型这类
+    「周期音型」被误判成主旋律（它们的动机重复度接近满分，单看显著性容易赢过真人声）。
+    默认关闭：关掉后只看显著性，与以前完全一致。
+  </p>
+  <div class="settings-grid">
+    <div>
+      <label class="checkbox-label">
+        <input type="checkbox" name="melody_shape_gate"
+               {% if config.melody_shape_gate %}checked{% endif %}>
+        形态（旋律轮廓）决定资格
+      </label>
+      <p class="field-hint">
+        开启后：段内声部的旋律轮廓形态分达不到下限就失去当主旋律的资格，
+        由段内形态合格且显著性最高的声部顶上。
+      </p>
+    </div>
+    <div>
+      <label class="field-label">形态资格下限</label>
+      <input type="number" step="0.01" min="0" max="1" name="melody_shape_min_score"
+             class="input" value="{{ config.melody_shape_min_score }}">
+      <p class="field-hint">
+        形态分（0–1）= 级进比×0.7 + 拱形度×0.15 + 轮廓平滑度×0.15，低于该值即失去资格。
+        级进比权重最高——分解和弦在轮廓上同样是"平滑大波浪"，只有级进比能识破它。
+        调高 = 卡得更严；调低 = 更宽容。段内音符太少不足以统计轮廓时一律放行。
+      </p>
+    </div>
+  </div>
+
   <h3>主旋律导出（节奏 / 音色）</h3>
   <p class="field-hint">
     两张主旋律卡（⑨ 选轨、⑩ 逐段）共用的<b>默认</b>导出方式。

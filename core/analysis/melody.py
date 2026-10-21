@@ -91,11 +91,14 @@ def _export_timeline_spliced(data: ScoreData, timeline: list, options: dict):
     return part, {'tempo': tempo_desc, 'instrument': inst_desc}
 
 
-def _write_melody(piece, part_desc, stem: str, options: dict):
-    """补小节 → 落盘 → 附记本次导出用的节奏 / 音色。"""
+def _write_melody(piece, part_desc, stem: str, options: dict, run_tag: str = ''):
+    """补小节 → 落盘 → 附记本次导出用的节奏 / 音色。
+
+    run_tag 带上运行序号（r1 / r2 …），每次运行的产物各存一份，重跑不覆盖。
+    """
     part, desc = part_desc
     files = save_stream(piece, mex.finalize_part(part),
-                        mex.stem_with_options(stem, options))
+                        mex.stem_with_options(stem, options, run_tag=run_tag))
     files['options'] = dict(options)
     files['tempo_desc'] = desc['tempo']
     files['instrument_desc'] = desc['instrument']
@@ -160,7 +163,8 @@ def build_export_parts(data: ScoreData, prior_output: dict, options: dict) -> li
     return built
 
 
-def export_again(data: ScoreData, piece, prior_output: dict, options: dict) -> dict:
+def export_again(data: ScoreData, piece, prior_output: dict, options: dict,
+                 run_tag: str = '') -> dict:
     """在不重跑分析的前提下，按新的节奏 / 音色重新导出主旋律声部识别（选轨）。
 
     ``prior_output`` 是上一次 melody_extraction 的 output（含 mode /
@@ -169,19 +173,25 @@ def export_again(data: ScoreData, piece, prior_output: dict, options: dict) -> d
     out = {}
     for b in build_export_parts(data, prior_output, options):
         out[b['key']] = _write_melody(piece, (b['part'], b['desc']),
-                                      b['stem'], options)
+                                      b['stem'], options, run_tag)
     return out
 
 
 def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
                       poly_out: dict, exchange_out: dict,
-                      options: dict | None = None) -> dict:
+                      options: dict | None = None,
+                      run_seq: int | None = None) -> dict:
     """主旋律**声部识别**（选轨）主入口。
 
     用户单独触发；复调→多候选，交接→时间线分段拼接。
     判定口径与阈值沿用原有实现（exchange 的两个阈值不变）。
     """
     options = mex.resolve_options(config, options)
+    # 每次运行一份文件（r1 / r2 …）：重跑不覆盖上一次的产物，
+    # 历史归档里每一次运行都能下到它自己那份。
+    if run_seq is None:
+        run_seq = mex.next_run_seq(piece, 'melody_extraction')
+    run_tag = mex.run_stem_tag(run_seq)
     sal = voice_out['salience']
     part_names = sal['part_names']
 
@@ -205,6 +215,7 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
         'candidates': candidates,
         'export_options': options,
         'export_options_label': mex.options_label(options),
+        'export_run_seq': int(run_seq or 1),
         'exports': {},
     }
 
@@ -215,14 +226,15 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
         result['attribution_timeline'] = timeline
         result['exports'] = _write_melody(
             piece, _export_timeline_spliced(data, timeline, options),
-            'melody_spliced', options)
+            'melody_spliced', options, run_tag)
     elif poly_out['is_polyphonic']:
         # 复调分支：多候选 + 置信度；导出 top-1（供参考）
         result['mode'] = '复调（多候选 + 置信度，不强行选唯一）'
         if candidates:
             top = _export_part_as_melody(data, candidates[0]['part_index'], options)
             result['exports'] = _write_melody(
-                piece, top, f'melody_candidate_{candidates[0]["part_index"]}', options)
+                piece, top, f'melody_candidate_{candidates[0]["part_index"]}',
+                options, run_tag)
     else:
         # 单声 / 主调：显著性最高声部即主旋律
         result['mode'] = '单声 / 主调（唯一主旋律）'
@@ -230,7 +242,8 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
             top = _export_part_as_melody(data, candidates[0]['part_index'], options)
             result['chosen'] = candidates[0]
             result['exports'] = _write_melody(
-                piece, top, f'melody_{candidates[0]["part_index"]}', options)
+                piece, top, f'melody_{candidates[0]["part_index"]}',
+                options, run_tag)
 
     return result
 

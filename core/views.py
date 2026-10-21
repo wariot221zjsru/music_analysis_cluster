@@ -236,6 +236,7 @@ def _qa_payload(q: QAQuestion) -> dict:
 
 
 def _run_payload(run: AnalysisRun, with_output: bool = False) -> dict:
+    out = run.output if isinstance(run.output, dict) else {}
     item = {
         'id': run.id,
         'seq': run.seq,
@@ -247,6 +248,16 @@ def _run_payload(run: AnalysisRun, with_output: bool = False) -> dict:
         'archived_at': run.archived_at.isoformat(),
         'has_output': bool(run.output),
         'error': run.error[:600] if run.error else '',
+        # 该次运行有没有开「形态（旋律轮廓）决定资格」—— 逐段追踪的两种口径
+        # 结果可能不同，回看时必须知道这一份是按哪种口径跑出来的。
+        # 这一步没有形态层（别的步骤）时为 None，前端就不显示这个标。
+        'shape_gate': out.get('shape_gate') if isinstance(
+            out.get('shape_gate'), bool) else None,
+        'shape_gate_threshold': out.get('shape_gate_threshold'),
+        'shape_replacements': out.get('shape_replacements'),
+        # 该次运行落盘的第几次产物（文件名里带着 rN，重跑不覆盖）
+        'export_run_seq': out.get('export_run_seq'),
+        'export_options_label': out.get('export_options_label') or '',
     }
     if with_output:
         item['output'] = run.output
@@ -470,6 +481,15 @@ def reexport_melody(request, piece_id: int):
         return JsonResponse({'ok': False, 'error': f'谱面读取失败：{exc}'},
                             status=400)
 
+    # 文件名标记沿用它自己那次运行的口径：形态层开没开 + 第几次运行。
+    # 换节奏 / 音色只改选项后缀，运行编号不变 —— 于是「第 N 次」始终只有一份，
+    # 历史归档里那一行的下载链接也一直指向它自己的文件。
+    run_tag = mex.export_run_tag(result.output, piece, step)
+    shape_tag = ''
+    if step == 'melody_line':
+        shape_tag = mex.shape_stem_tag((result.output or {}).get('shape_gate'),
+                                       (result.output or {}).get('shape_gate_threshold'))
+
     try:
         if step == 'melody_line':
             segments = (result.output or {}).get('segments') or []
@@ -477,9 +497,12 @@ def reexport_melody(request, piece_id: int):
                 return JsonResponse(
                     {'ok': False, 'error': '该步骤没有分段结果，请重新运行一次。'},
                     status=400)
-            exports = melody_line_mod.export_segments(data, piece, segments, options)
+            exports = melody_line_mod.export_segments(
+                data, piece, segments, options,
+                shape_tag=shape_tag, run_tag=run_tag)
         else:
-            exports = melody_mod.export_again(data, piece, result.output, options)
+            exports = melody_mod.export_again(data, piece, result.output, options,
+                                              run_tag)
     except Exception as exc:  # noqa: BLE001
         return JsonResponse({'ok': False, 'error': f'导出失败：{exc}'}, status=500)
     if not exports:
@@ -541,6 +564,10 @@ def melody_export_download(request, piece_id: int):
         raise Http404(f'谱面读取失败：{exc}')
 
     out = result.output or {}
+    # 形态资格层开没开写进下载文件名：开了的那份与没开的那份一眼能分清
+    shape_tag = ''
+    if step == 'melody_line' and out.get('shape_gate'):
+        shape_tag = mex.shape_label(True, out.get('shape_gate_threshold'))
     if step == 'melody_line':
         segments = out.get('segments') or []
         if not segments:
@@ -572,7 +599,7 @@ def melody_export_download(request, piece_id: int):
         raise Http404(f'导出失败：{exc}')
 
     ext = '.mid' if fmt == 'midi' else '.musicxml'
-    filename = mex.download_filename(piece.title, label, options, ext)
+    filename = mex.download_filename(piece.title, label, options, ext, shape_tag)
     ctype = ('audio/midi' if fmt == 'midi'
              else 'application/vnd.recordare.musicxml+xml')
     resp = FileResponse(io.BytesIO(payload), as_attachment=True,
@@ -654,6 +681,11 @@ def system_settings(request):
                 request.POST['melody_confidence_high'])
             config.melody_confidence_mid = float(
                 request.POST['melody_confidence_mid'])
+            # 形态资格层（可选）：形态定"资格"，显著性定"强弱"
+            config.melody_shape_gate = bool(
+                request.POST.get('melody_shape_gate'))
+            config.melody_shape_min_score = float(
+                request.POST.get('melody_shape_min_score') or 0.35)
             # 主旋律导出（两张卡共用的默认值）
             config.melody_export_tempo_mode = (
                 request.POST.get('melody_export_tempo_mode') or 'original')

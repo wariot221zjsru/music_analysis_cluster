@@ -214,6 +214,16 @@ body {
   background: var(--accent-bg); color: var(--primary);
   font-size: 11px; padding: 0 5px; border-radius: 4px;
 }
+/* 形态资格层把某段的归属换掉了（原声部轮廓形态不合格） */
+.tag-shape {
+  background: #fdf1dc; color: #8a5a12;
+  font-size: 11px; padding: 0 5px; border-radius: 4px;
+}
+/* 历史运行里：该次运行**没有**启用形态资格层（与上面的「开」对照着看） */
+.tag-shape-off {
+  background: var(--bg-soft, #f2f2f2); color: var(--muted);
+  font-size: 11px; padding: 0 5px; border-radius: 4px;
+}
 .conf { font-size: 12px; white-space: nowrap; }
 .conf-high { color: var(--done); font-weight: 600; }
 .conf-mid { color: var(--running); }

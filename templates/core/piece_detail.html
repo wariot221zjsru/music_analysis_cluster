@@ -261,6 +261,30 @@ function histBtn(step) {
     + `🕘 历史 ${n}</button>`;
 }
 
+/* 该次运行有没有开「形态（旋律轮廓）决定资格」—— 两种口径的提取结果
+   可能归属到不同声部，回看时必须一眼看出这份是按哪种口径跑的。
+   shape_gate 为 null 表示这一步没有形态层（别的步骤），不显示这个标。 */
+function shapeChip(it, step, withTitle) {
+  if (it.shape_gate === true) {
+    const th = (it.shape_gate_threshold === null || it.shape_gate_threshold === undefined)
+      ? '' : `（下限 ${it.shape_gate_threshold}）`;
+    const rep = it.shape_replacements
+      ? `，形态层替换了 ${it.shape_replacements} 段` : '';
+    const tip = withTitle ? ` title="该次运行开启了形态资格层${th}${rep}"` : '';
+    return `<span class="tag tag-shape"${tip}>形态资格 开${th}</span>`;
+  }
+  if (it.shape_gate === false) {
+    const tip = withTitle ? ' title="该次运行只看显著性，未启用形态资格层"' : '';
+    return `<span class="tag tag-shape-off"${tip}>形态资格 关</span>`;
+  }
+  // 这一步有形态层、但这次运行没记下开关（早于形态层上线的历史记录）
+  if (step === 'melody_line') {
+    const tip = withTitle ? ' title="该次运行早于形态资格层上线，未记录开关状态"' : '';
+    return `<span class="tag tag-shape-off"${tip}>形态资格 未记录</span>`;
+  }
+  return '';
+}
+
 function renderHistoryList(step, items) {
   if (!items.length) return '<p class="muted small">暂无历史记录。</p>';
   const rows = items.map(it => {
@@ -277,11 +301,53 @@ function renderHistoryList(step, items) {
       <summary><span class="hist-seq">第 ${it.seq} 次</span>
         <span class="pill ${cls}">${st}</span>
         <span class="muted small">${fmtTime(it.finished_at)}</span>
-        <span class="muted small">${escapeHtml(it.trigger_label)}</span>${dur}</summary>
+        <span class="muted small">${escapeHtml(it.trigger_label)}</span>
+        ${shapeChip(it, step, true)}${dur}</summary>
       <div class="hist-body"><p class="muted small">展开后加载…</p></div>
     </details>`;
   }).join('');
-  return `<div class="hist-head">历史运行（共 ${items.length} 次，最近在前）</div>${rows}`;
+  return `<div class="hist-head">历史运行（共 ${items.length} 次，最近在前；`
+    + `每次运行的导出文件单独保存、文件名互不相同）</div>${rows}`;
+}
+
+/* 历史模式下的导出清单：链接指向**该次运行自己那份**文件 —— 每次运行落盘
+   的文件名里都带着运行序号（r1 / r2 …），重跑不会覆盖上一次的产物。 */
+function histExports(o) {
+  const ex = (o && o.exports) || {};
+  const keys = Object.keys(ex);
+  if (!keys.length) return '<p class="muted small">该次运行没有留下导出文件。</p>';
+  const flat = !!ex.midi;
+  const NAME = {absolute: '原位版', spliced: '无缝拼接版'};
+  const groups = flat ? [['', ex]] : keys.map(k => [k, ex[k]]);
+  let html = '';
+  for (const [k, f] of groups) {
+    if (!f || !f.midi) continue;
+    const nm = flat ? '主旋律' : (NAME[k] || escapeHtml(k));
+    html += `<div class="kv"><b>${escapeHtml(nm)}：</b>`
+      + `<a class="tag tag-link" href="${mediaUrl(f.midi)}" title="${escapeHtml(f.midi)}">MIDI ⬇</a>`
+      + (f.musicxml ? `<a class="tag tag-link" href="${mediaUrl(f.musicxml)}" title="${escapeHtml(f.musicxml)}">MusicXML ⬇</a>` : '')
+      + playBtn(f.midi, nm)
+      + `<span class="muted small">${escapeHtml((f.midi || '').split('/').pop() || '')}</span></div>`;
+  }
+  if (o && o.export_options_label) {
+    html = `<div class="kv"><b>该次导出设置：</b>${escapeHtml(o.export_options_label)}</div>` + html;
+  }
+  return html;
+}
+
+/* 该次运行留下的提示消息（说明 / 警告 / 失败原因），历史里也能翻到 */
+const HIST_MSG_KEYS = [['note', '说明'], ['window_warning', '窗口警告'],
+  ['export_error', '导出失败'], ['llm_error', 'AI 分析失败']];
+
+function histMessages(o) {
+  const msgs = [];
+  for (const [k, label] of HIST_MSG_KEYS) {
+    const v = (o || {})[k];
+    if (v) msgs.push(`<li><b>${label}：</b>${escapeHtml(String(v))}</li>`);
+  }
+  if (!msgs.length) return '';
+  return `<details class="melody-detail"><summary>该次运行的消息（${msgs.length}）</summary>`
+    + `<ul class="small">${msgs.join('')}</ul></details>`;
 }
 
 function bindHistory(step) {
@@ -298,11 +364,18 @@ function bindHistory(step) {
         if (!data.ok) { body.innerHTML = '<p class="muted small">加载失败。</p>'; return; }
         const it = data.item;
         if (it.status === 'error') {
-          body.innerHTML = `<pre class="error-pre">${escapeHtml(it.error)}</pre>`;
+          body.innerHTML = shapeChip(it, step, false)
+            + `<pre class="error-pre">${escapeHtml(it.error)}</pre>`;
         } else if (it.output) {
-          body.innerHTML = renderOutput(step, it.output);
+          // 历史模式：导出清单指向该次运行自己那份文件，且不再摆"按当前设置下载"
+          // 的按钮（那是按**当前**结果现算的，不属于这一次运行）。
+          body.innerHTML = shapeChip(it, step, false)
+            + renderOutput(step, it.output, {hist: true})
+            + histMessages(it.output);
+          bindPlayers();
         } else {
-          body.innerHTML = '<p class="muted small">该次运行没有留下输出。</p>';
+          body.innerHTML = shapeChip(it, step, false)
+            + '<p class="muted small">该次运行没有留下输出。</p>';
         }
       } catch (e) {
         body.innerHTML = '<p class="muted small">加载失败。</p>';
@@ -458,6 +531,14 @@ function playBtn(url, label) {
     data-midi-url="${mediaUrl(url)}" title="试听${label}（合成音，仅核对用）">▶ ${label}</button>`;
 }
 
+/* 本次产物是第几次运行：文件名里就带着 rN，重跑不覆盖以前那几份 */
+function runTagLine(o) {
+  const n = (o && o.export_run_seq) ? o.export_run_seq : 0;
+  if (!n) return '';
+  return `<div class="kv muted small"><b>本次产物：</b>第 ${n} 次运行`
+    + `（导出文件名末尾带 r${n}，与以前每次运行的产物并存）</div>`;
+}
+
 /* 「按当前设置下载」：现算一份带当前节奏 / 音色的 MIDI，直接下发，
    不写库、不走 /media/（也就不会被缓存成上一次那份）。 */
 function dlUrl(step, fmt, variant, candidate) {
@@ -484,9 +565,13 @@ function dlBtn(step, fmt, label, variant, primary) {
     ${variant ? `data-dl-variant="${variant}"` : ''}>${label}</button>`;
 }
 
-function exportPanel(step, o, hasExport) {
+function exportPanel(step, o, hasExport, hist) {
   // 没有导出结果就什么都不显示；下载本身只要能看这个作品就行（只读也能下），
   // 改节奏 / 音色、写回结果才要编辑权。
+  if (hist) {
+    // 历史运行里只列该次运行自己那份文件（文件名带运行序号，重跑不覆盖）
+    return histExports(o);
+  }
   if (!hasExport) return '';
   const c = curOptions(o);
   const label = (o && o.export_options_label)
@@ -745,21 +830,24 @@ const RENDERERS = {
         <p class="muted small">上方调性区域/转调为空，点右上角 ⟲ 可只重跑本模块。</p></div>` : ''}
       ${o.description ? `<p class="llm-desc">${escapeHtml(o.description)}</p>` : ''}`;
   },
-  melody_extraction(o) {
+  melody_extraction(o, opts) {
     const rows = (o.candidates || []).map(c => [c.part_name, (c.confidence * 100).toFixed(1) + '%']);
     const keys = Object.keys(o.exports || {});
     let exports = '';
     if (o.exports && o.exports.midi) {
       exports = `<div class="kv"><b>导出：</b>
-        <a class="tag tag-link" href="${mediaUrl(o.exports.midi)}">主旋律 MIDI ⬇</a>
-        <a class="tag tag-link" href="${mediaUrl(o.exports.musicxml)}">主旋律 MusicXML ⬇</a>
+        <a class="tag tag-link" href="${mediaUrl(o.exports.midi)}"
+           title="${escapeHtml(o.exports.midi)}">主旋律 MIDI ⬇</a>
+        <a class="tag tag-link" href="${mediaUrl(o.exports.musicxml)}"
+           title="${escapeHtml(o.exports.musicxml)}">主旋律 MusicXML ⬇</a>
         ${playBtn(o.exports.midi, '试听')}</div>`;
     } else if (keys.length) {
       // 复调分支：多个候选各有一份导出
       exports = '<div class="kv"><b>导出（各候选）：</b>' + keys.map(k => {
         const f = o.exports[k];
         const n = (k.match(/(\d+)$/) || [])[1] || '';
-        return `<a class="tag tag-link" href="${mediaUrl(f.midi)}">${escapeHtml(k)} MIDI ⬇</a>`
+        return `<a class="tag tag-link" href="${mediaUrl(f.midi)}"
+          title="${escapeHtml(f.midi)}">${escapeHtml(k)} MIDI ⬇</a>`
           + playBtn(f.midi, n ? `候选${n}` : '试听');
       }).join(' ') + '</div>';
     }
@@ -768,31 +856,54 @@ const RENDERERS = {
       全曲只选一个声部（<b>器乐前奏 / 间奏可能因此不计入</b>）。
       逐段口径见下一张卡「主旋律线追踪（逐段）」。</p>` +
       `<div class="kv"><b>模式：</b><span class="highlight">${o.mode}</span></div>` +
+      runTagLine(o) +
       tableFrom(rows, ['候选声部', '置信度']) + exports +
-      exportPanel('melody_extraction', o, keys.length > 0);
+      exportPanel('melody_extraction', o, keys.length > 0, !!(opts && opts.hist));
   },
-  melody_line(o) {
+  melody_line(o, opts) {
     const segs = o.segments || [];
     const cov = o.coverage || {};
-    const rows = segs.map(s => [
-      `${s.start_measure}–${s.end_measure}`,
-      `${s.bars}`,
-      `${escapeHtml(s.part_name)}${s.is_voice ? ' <span class="tag tag-voice">人声</span>' : ''}`,
-      s.note_count,
-      `<span class="conf conf-${s.level === '高' ? 'high' : (s.level === '中' ? 'mid' : 'low')}"
-        title="margin ${s.margin}">${s.level}（${(s.confidence * 100).toFixed(0)}%）</span>`,
-    ]);
+    const rows = segs.map(s => {
+      const sh = s.shape || {};
+      const shapeTag = (s.shape_replaced_from !== null && s.shape_replaced_from !== undefined)
+        ? ` <span class="tag tag-shape" title="${escapeHtml(s.shape_reason || '')}">形态替换</span>`
+        : '';
+      const shapeTip = (sh.score === null || sh.score === undefined)
+        ? (sh.reason ? `形态：${sh.reason}` : '')
+        : `形态分 ${sh.score}（级进 ${sh.step_ratio} / 拱形 ${sh.arch} / 平滑 ${sh.contour_smooth}）`;
+      return [
+        `${s.start_measure}–${s.end_measure}`,
+        `${s.bars}`,
+        `${escapeHtml(s.part_name)}${s.is_voice ? ' <span class="tag tag-voice">人声</span>' : ''}${shapeTag}`,
+        s.note_count,
+        `<span class="conf conf-${s.level === '高' ? 'high' : (s.level === '中' ? 'mid' : 'low')}"
+        title="margin ${s.margin}${shapeTip ? ' · ' + shapeTip : ''}">${s.level}（${(s.confidence * 100).toFixed(0)}%）</span>`,
+      ];
+    });
+    /* 形态资格层换过人的段：汇总一行 + 折叠的理由明细 */
+    const replaced = o.shape_gate ? (o.shape_replacement_notes || []) : [];
+    const shapeBlock = replaced.length
+      ? `<div class="kv"><b>形态层替换了 ${replaced.length} 段：</b>`
+        + replaced.map(n => `${n.measures} ${escapeHtml(n.from)} → ${escapeHtml(n.to)}`).join('；')
+        + `</div><details class="melody-detail"><summary>替换理由</summary><ul class="small">`
+        + replaced.map(n => `<li>${n.measures}：${escapeHtml(n.reason)}</li>`).join('')
+        + `</ul></details>`
+      : '';
     let exports = '';
     const ex = o.exports || {};
     if (ex.absolute && ex.absolute.midi) {
       exports = `<div class="kv"><b>导出：</b>
-        <a class="tag tag-link" href="${mediaUrl(ex.absolute.midi)}">原位 MIDI ⬇</a>
-        <a class="tag tag-link" href="${mediaUrl(ex.absolute.musicxml)}">原位 MusicXML ⬇</a>
+        <a class="tag tag-link" href="${mediaUrl(ex.absolute.midi)}"
+           title="${escapeHtml(ex.absolute.midi)}">原位 MIDI ⬇</a>
+        <a class="tag tag-link" href="${mediaUrl(ex.absolute.musicxml)}"
+           title="${escapeHtml(ex.absolute.musicxml)}">原位 MusicXML ⬇</a>
         ${playBtn(ex.absolute.midi, '试听原位')}
         </div>
         <div class="kv">
-        <a class="tag tag-link" href="${mediaUrl(ex.spliced.midi)}">无缝拼接 MIDI ⬇</a>
-        <a class="tag tag-link" href="${mediaUrl(ex.spliced.musicxml)}">无缝拼接 MusicXML ⬇</a>
+        <a class="tag tag-link" href="${mediaUrl(ex.spliced.midi)}"
+           title="${escapeHtml(ex.spliced.midi)}">无缝拼接 MIDI ⬇</a>
+        <a class="tag tag-link" href="${mediaUrl(ex.spliced.musicxml)}"
+           title="${escapeHtml(ex.spliced.musicxml)}">无缝拼接 MusicXML ⬇</a>
         ${playBtn(ex.spliced.midi, '试听拼接')}</div>
         <p class="muted small">原位版各段留在真实小节位置（人声没唱的地方留白）；
         拼接版首尾相接，适合当一条旋律线听 / 导入 DAW。
@@ -810,19 +921,23 @@ const RENDERERS = {
       方法：${escapeHtml(o.method || '')}</p>` +
       `<div class="kv"><b>模式：</b><span class="highlight">${o.mode}</span>`
       + `　<b>时间窗：</b>${o.window_bars} 小节`
-      + `　<b>人声优先：</b>${o.voice_priority ? '开' : '关'}</div>` +
+      + `　<b>人声优先：</b>${o.voice_priority ? '开' : '关'}`
+      + `　<b>形态资格：</b>${o.shape_gate
+          ? `开（下限 ${o.shape_gate_threshold}）` : '关'}</div>` +
+      runTagLine(o) +
       (o.has_voice_parts
         ? `<div class="kv"><b>人声声部：</b>${(o.voice_parts || [])
             .map(p => escapeHtml(p.name)).join('、')}</div>`
         : '<div class="kv muted"><b>本作品无人声声部</b>，全程按显著性选轨。</div>') +
       (segs.length ? tableFrom(rows, ['小节', '长度', '归属声部', '音符数', '置信度'])
-        : '<p class="muted small">没有可追踪的段落。</p>') +
+        : '<p class="muted small">没有可追踪的段落。</p>') + shapeBlock +
       (cov.ratio !== undefined
         ? `<div class="kv"><b>覆盖：</b>${cov.covered_bars}/${cov.total_bars} 小节`
           + `（${(cov.ratio * 100).toFixed(1)}%）`
           + (cov.gap_bars ? `　未覆盖 ${cov.gap_bars} 小节（整窗静默）` : '') + '</div>'
         : '') + exports +
-      exportPanel('melody_line', o, !!(ex.absolute && ex.absolute.midi)) +
+      exportPanel('melody_line', o, !!(ex.absolute && ex.absolute.midi),
+                  !!(opts && opts.hist)) +
       (o.export_error ? `<div class="alert alert-warn">导出失败：${escapeHtml(o.export_error)}</div>` : '') +
       (o.note ? `<p class="muted small">${escapeHtml(o.note)}</p>` : '') +
       (winRows.length ? `<details class="melody-detail">
@@ -840,9 +955,9 @@ const RENDERERS = {
   },
 };
 
-function renderOutput(step, output) {
+function renderOutput(step, output, opts) {
   const fn = RENDERERS[step];
-  return fn ? fn(output) : jpre(output);
+  return fn ? fn(output, opts || {}) : jpre(output);
 }
 
 /* 步骤卡是动态渲染的，导出链接旁新生成的 ▶ 试听按钮要重新绑定一次 */
