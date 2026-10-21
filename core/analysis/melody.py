@@ -91,13 +91,15 @@ def _export_timeline_spliced(data: ScoreData, timeline: list, options: dict):
     return part, {'tempo': tempo_desc, 'instrument': inst_desc}
 
 
-def _write_melody(piece, part_desc, stem: str, options: dict, run_tag: str = ''):
+def _write_melody(piece, part_desc, stem: str, options: dict, run_tag: str = '',
+                  time_sig: dict | None = None):
     """补小节 → 落盘 → 附记本次导出用的节奏 / 音色。
 
     run_tag 带上运行序号（r1 / r2 …），每次运行的产物各存一份，重跑不覆盖。
+    time_sig 取原谱拍号，避免 3/4 的曲子被 music21 按 4/4 重新分小节。
     """
     part, desc = part_desc
-    files = save_stream(piece, mex.finalize_part(part),
+    files = save_stream(piece, mex.finalize_part(part, time_sig),
                         mex.stem_with_options(stem, options, run_tag=run_tag))
     files['options'] = dict(options)
     files['tempo_desc'] = desc['tempo']
@@ -129,7 +131,7 @@ def save_stream(piece, stream_obj, stem: str):
 def build_export_parts(data: ScoreData, prior_output: dict, options: dict) -> list:
     """按上一次的分支结果构建导出 Part（**不落盘**）。
 
-    返回 [{'key', 'stem', 'part', 'desc'}]：
+    返回 [{'key', 'stem', 'part', 'desc', 'time_sig'}]：
       key  = 结果字典里的键（稳定，不随选项变，页面靠它识别"候选 N"）
       stem = 落盘文件名主干，带节奏 / 音色后缀
 
@@ -160,6 +162,9 @@ def build_export_parts(data: ScoreData, prior_output: dict, options: dict) -> li
             part, desc = _export_part_as_melody(data, idx, options)
             key = f'melody_{idx}'
             built.append({'key': key, 'stem': key, 'part': part, 'desc': desc})
+    # 补小节时要用原谱拍号（3/4 的曲子不能按 4/4 重新切）
+    for b in built:
+        b['time_sig'] = mex.source_time_sig(data)
     return built
 
 
@@ -173,7 +178,8 @@ def export_again(data: ScoreData, piece, prior_output: dict, options: dict,
     out = {}
     for b in build_export_parts(data, prior_output, options):
         out[b['key']] = _write_melody(piece, (b['part'], b['desc']),
-                                      b['stem'], options, run_tag)
+                                      b['stem'], options, run_tag,
+                                      b.get('time_sig'))
     return out
 
 
@@ -210,12 +216,21 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
     # 打击乐声部没有旋律意义，不进候选（防御：显著性矩阵理应已排除）
     pitched_idx = {p.index for p in data.parts if p.pitched_events}
     candidates = [c for c in candidates if c['part_index'] in pitched_idx]
+    # 低音区声部不当主旋律候选：显著性四项在窗内 min-max 归一，贝斯靠
+    # "长时值 + 高重复 + 稀疏"三项常常排到人声旋律前面。
+    # 全曲只剩低音在响时退回不排除。
+    from . import voice_id as voice_mod      # 懒加载：避免模块级循环依赖
+    low = voice_mod.low_register_parts(data)
+    kept = [c for c in candidates if c['part_index'] not in low]
+    candidates = kept or candidates
 
     result = {
         'candidates': candidates,
         'export_options': options,
         'export_options_label': mex.options_label(options),
         'export_run_seq': int(run_seq or 1),
+        'low_register_parts': sorted(low),
+        'low_register_names': [data.parts[i].name for i in sorted(low)],
         'exports': {},
     }
 
@@ -226,7 +241,7 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
         result['attribution_timeline'] = timeline
         result['exports'] = _write_melody(
             piece, _export_timeline_spliced(data, timeline, options),
-            'melody_spliced', options, run_tag)
+            'melody_spliced', options, run_tag, mex.source_time_sig(data))
     elif poly_out['is_polyphonic']:
         # 复调分支：多候选 + 置信度；导出 top-1（供参考）
         result['mode'] = '复调（多候选 + 置信度，不强行选唯一）'
@@ -234,7 +249,7 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
             top = _export_part_as_melody(data, candidates[0]['part_index'], options)
             result['exports'] = _write_melody(
                 piece, top, f'melody_candidate_{candidates[0]["part_index"]}',
-                options, run_tag)
+                options, run_tag, mex.source_time_sig(data))
     else:
         # 单声 / 主调：显著性最高声部即主旋律
         result['mode'] = '单声 / 主调（唯一主旋律）'
@@ -243,7 +258,7 @@ def melody_extraction(data: ScoreData, config, piece, voice_out: dict,
             result['chosen'] = candidates[0]
             result['exports'] = _write_melody(
                 piece, top, f'melody_{candidates[0]["part_index"]}',
-                options, run_tag)
+                options, run_tag, mex.source_time_sig(data))
 
     return result
 

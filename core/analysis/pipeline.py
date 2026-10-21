@@ -33,7 +33,7 @@ from . import texture as texture_mod
 from . import tonality as tonality_mod
 from . import voice_branches
 from . import voice_id as voice_mod
-from .scoredata import parse_score
+from .scoredata import parse_score, windows_of_measures
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,30 @@ class _Ctx:
                 raise RuntimeError('作品尚未转换为 MusicXML（请先完成格式转换）。')
             self.score = parse_score(self.piece.musicxml_file.path)
         return self.score
+
+
+def _stale_deps(data, config, outputs) -> set:
+    """已完成的依赖里，哪些是**按另一份谱面解析**算出来的（已过期）。
+
+    起因（线上真实事故）：谱面解析改过之后（小节表不再只取第一个声部，
+    一首曲子从 32 小节变回真实的 66 小节），声部识别的显著性矩阵还是
+    8 个窗的旧值。单步重跑 melody_line 时 `ctx.outputs` 直接复用它，
+    后半首曲子在矩阵里一个窗都查不到 —— 于是半首旋律凭空消失。
+
+    这里按"窗数是否还和当前谱面对得上"判断，过期的依赖跟着重跑，
+    用户点一次 ⟲ 就能自愈，不必记得"先去重跑声部识别"。
+    """
+    stale = set()
+    vo = outputs.get('voice_id')
+    if isinstance(vo, dict):
+        sal = vo.get('salience') or {}
+        matrix = sal.get('matrix') or []
+        if matrix and (
+                sal.get('window_bars') != config.analysis_window_bars
+                or len(matrix) != len(windows_of_measures(
+                    data, config.analysis_window_bars))):
+            stale.add('voice_id')
+    return stale
 
 
 def _set_result(piece, step, status, output=None, error=None,
@@ -212,6 +236,28 @@ def _run_steps(piece_id: int, steps: list, trigger: str = ''):
     ctx = _Ctx(piece, config)
     for r in AnalysisResult.objects.filter(piece=piece, status='done'):
         ctx.outputs[r.step] = r.output
+
+    # 依赖是否过期（按另一份谱面解析算出来的）→ 过期就跟着重跑，
+    # 用户点一次 ⟲ 就能自愈，不必记得"先去重跑声部识别"。
+    if steps:
+        try:
+            extra = _stale_deps(ctx.parsed(), config, ctx.outputs)
+        except Exception:  # noqa: BLE001 —— 解析不了就让下面的步骤照常报错
+            extra = set()
+        if extra:
+            done = set(ctx.outputs)
+            changed = True
+            while changed:          # 过期依赖自己的依赖也要补
+                changed = False
+                for s in list(extra):
+                    for dep in STEP_DEPS.get(s, []):
+                        if dep not in extra and dep not in done:
+                            extra.add(dep)
+                            changed = True
+            steps = [s for s in CANONICAL_ORDER if s in (set(steps) | extra)]
+            for s in steps:
+                _set_result(piece, s, 'pending', trigger=trigger)
+            logger.info('依赖已过期，自动补跑：%s', sorted(extra))
 
     try:
         executed = set()

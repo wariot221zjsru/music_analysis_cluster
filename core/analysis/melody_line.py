@@ -51,8 +51,15 @@ from .scoredata import (
 #   ② 导出写入 tempo 与 instrument，不再是恒 120 BPM + 默认钢琴。
 
 
-def _window_choices(matrix_row: dict, data: ScoreData) -> list:
-    """一个窗的 {part_index: salience} → 按显著性降序的列表。"""
+def _window_choices(matrix_row: dict, data: ScoreData,
+                    low: set = frozenset()) -> list:
+    """一个窗的 {part_index: salience} → 按显著性降序的候选列表。
+
+    ``low`` 是低音区声部（比全曲最高声部低 ≥ 2 个八度），在这里**只打标记**
+    不剔除：主旋律在高音区，选人时排除它们（见 :func:`_pick`），但算置信度
+    的 margin 仍把它们算作竞争对手 —— 否则"贝斯被排除"会让置信度虚高到
+    满分，反而看不出这段到底有多确定。
+    """
     items = []
     for idx, sc in matrix_row.get('scores', {}).items():
         i = int(idx)
@@ -61,28 +68,37 @@ def _window_choices(matrix_row: dict, data: ScoreData) -> list:
             'part_name': data.part_names[i] if i < len(data.part_names) else f'Part {i}',
             'salience': float(sc),
             'is_voice': data.parts[i].is_voice if i < len(data.parts) else False,
+            'low_register': i in low,
         })
     items.sort(key=lambda d: -d['salience'])
     return items
 
 
 def _pick(choices: list, voice_priority: bool):
-    """窗内选轨：人声优先 → 否则显著性最高。返回 (选中项, margin)。"""
+    """窗内选轨：人声优先 → 否则显著性最高。返回 (选中项, margin)。
+
+    低音区声部**不参与竞选**（主旋律在高音区），但仍是 margin 的竞争对手；
+    整窗只剩低音在响时才让它上，绝不把整窗记成静默。
+    """
     if not choices:
         return None, 0.0
+    eligible = [c for c in choices if not c.get('low_register')] or choices
+
+    def _margin(best: dict) -> float:
+        rivals = [c['salience'] for c in choices
+                  if c['part_index'] != best['part_index']]
+        # 只有一个声部在响：无竞争 → 记为完全确定
+        if not rivals:
+            return 1.0
+        return max(best['salience'] - max(rivals), 0.0)
+
     if voice_priority:
-        voices = [c for c in choices if c['is_voice']]
+        voices = [c for c in eligible if c['is_voice']]
         if voices:
-            best = voices[0]        # 多人声时取显著性最高的那条
-            # margin 仍按"人声 vs 最强非人声竞争"计，反映人声是否真的突出
-            rivals = [c['salience'] for c in choices if not c['is_voice']]
-            margin = best['salience'] - (rivals[0] if rivals else 0.0)
-            return best, round(max(margin, 0.0), 4)
-    best = choices[0]
-    second = choices[1]['salience'] if len(choices) > 1 else 0.0
-    # 只有一个声部在响：无竞争 → 记为完全确定
-    margin = 1.0 if len(choices) == 1 else max(best['salience'] - second, 0.0)
-    return best, round(margin, 4)
+            best = max(voices, key=lambda c: c['salience'])   # 多人声取最显著那条
+            return best, round(_margin(best), 4)
+    best = eligible[0]
+    return best, round(_margin(best), 4)
 
 
 def _merge_short_runs(runs: list, min_bars: int) -> list:
@@ -321,7 +337,8 @@ def build_export_parts(data: ScoreData, segments: list, options: dict,
         built.append({'key': kind,
                       'stem': mex.stem_with_options(stem, options, shape_tag,
                                                     run_tag),
-                      'part': part, 'desc': desc})
+                      'part': part, 'desc': desc,
+                      'time_sig': mex.source_time_sig(data)})
     return built
 
 
@@ -332,7 +349,8 @@ def export_segments(data: ScoreData, piece, segments: list, options: dict,
     out = {}
     for b in build_export_parts(data, segments, options, measure_offsets, bar_ql,
                                 shape_tag, run_tag):
-        files = save_stream(piece, mex.finalize_part(b['part']), b['stem'])
+        files = save_stream(piece, mex.finalize_part(b['part'], b.get('time_sig')),
+                            b['stem'])
         files['options'] = dict(options)
         files['tempo_desc'] = b['desc']['tempo']
         files['instrument_desc'] = b['desc']['instrument']
@@ -378,18 +396,44 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
     # 按 start_measure 取窗，不按下标：matrix 是 voice_id 用**当时**的窗口长度
     # 算的，本步只依赖 voice_id，改过窗口设置后单步重跑会复用旧矩阵，
     # 按下标取会让"窗边界"和"显著性"对不上，导出取到错误小节的音符。
-    by_start = {int(r.get('start_measure', -1)): r for r in matrix}
+    #
+    # 更麻烦的是矩阵可能**整体偏短**：声部识别早先是按"小节结构只有 32 小节"
+    # 的旧谱解析跑出来的（首声部提前收尾导致小节表偏短），本步重新解析得到
+    # 66 小节，后半截的窗在矩阵里一个都查不到。以前遇到这种情况直接按静默
+    # 处理 → 半首曲子凭空消失（覆盖率 32/66）。现在改成**就地补算**：
+    # 用 voice_id 同一套 window_scores 现算，算法一致、结果可比，
+    # 用户也不必记得"先去重跑声部识别"。
+    from . import voice_id as voice_mod      # 懒加载：避免模块级循环依赖
+    low = voice_mod.low_register_parts(data)
+    matrix_bars = sal.get('window_bars')
+    stale_all = (matrix_bars is not None
+                 and int(matrix_bars) != int(config.analysis_window_bars))
+    by_start = ({} if stale_all
+                else {int(r.get('start_measure', -1)): r for r in matrix})
+    missing = [w['start_measure'] for w in windows
+               if w['start_measure'] not in by_start]
+    # 只缺个别窗也**整表重算**：留下一半旧值一半新值更糟 —— 旧值是按另一份
+    # 谱面解析（小节表偏短）算出来的，同一个声部在两套口径下的窗边界不同，
+    # 拼在一起会出现"这一段归它、下一段也归它、中间却断了"的怪结果。
+    if missing:
+        by_start = {}
     win_rows = []
     win_scores = {}          # {start_measure: {part_index: salience}}，段级形态层用
-    matrix_mismatch = []
+    matrix_filled = sorted({w['start_measure'] for w in windows}
+                           if (missing or stale_all) else set())
     for w in windows:
         row = by_start.get(w['start_measure'])
         if row is None:
-            row = {'scores': {}}
-            matrix_mismatch.append(w['start_measure'])
+            # 矩阵里没有这个窗 → 按同一套算法就地补算
+            m_start = measure_offsets.get(w['start_measure'], 0.0)
+            m_end = measure_offsets.get(w['end_measure'] + 1)
+            if m_end is None:
+                m_end = m_start + (w['end_measure'] - w['start_measure'] + 1) * bar_ql
+            wsc = voice_mod.window_scores(data, m_start, m_end)
+            row = {'scores': {str(k): v for k, v in wsc['scores'].items()}}
         win_scores[w['start_measure']] = {
             int(k): float(v) for k, v in (row.get('scores') or {}).items()}
-        choices = _window_choices(row, data)
+        choices = _window_choices(row, data, low)
         best, margin = _pick(choices, voice_priority)
         win_rows.append({
             'window': w['window'],
@@ -493,6 +537,12 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
                    f'（级进比×0.7 + 拱形度×0.15 + 轮廓平滑度×0.15）低于 {shape_min} '
                    '就失去资格，由形态合格且显著性最高的声部顶上；'
                    '音符太少不足以统计时不作判定，所有声部都不合格时保留原归属。')
+    low_names = [data.parts[i].name for i in sorted(low)] if low else []
+    if low_names:
+        # 主旋律在高音区：低音区声部不参与竞选
+        method += (f'低音区声部（{"、".join(low_names)}：平均音高低于 C3 且比全曲'
+                   '最高声部低 ≥2 个八度）不参与主旋律竞选；'
+                   '整窗只剩低音在响时才保留它。')
     result = {
         'mode': ('逐段追踪（人声掩膜 + 显著性 + 形态资格）' if shape_gate
                  else '逐段追踪（人声掩膜 + 显著性）'),
@@ -503,6 +553,9 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
         'confidence_thresholds': {'high': hi, 'mid': mid},
         'has_voice_parts': bool(voice_parts),
         'voice_parts': voice_parts,
+        # 被判为"低音区、不当主旋律"的声部（不参与逐段竞选）
+        'low_register_parts': sorted(low),
+        'low_register_names': low_names,
         'shape_gate': shape_gate,
         'shape_gate_threshold': shape_min if shape_gate else None,
         'shape_replacements': len(shape_replacements),
@@ -520,12 +573,16 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
         'export_run_seq': int(run_seq or 1),
         'exports': {},
     }
-    if matrix_mismatch:
-        # 显著性矩阵与当前窗口划分对不上（改过窗口设置后只重跑了本模块）
+    # 显著性矩阵里查不到的窗已由本步就地补算（同一套算法），这里只做告知，
+    # 不再让这些窗"凭空消失"。以前是"已按静默处理"，半首曲子会直接丢掉。
+    result['matrix_filled'] = matrix_filled
+    if matrix_filled:
+        why = ('窗口长度已从 %s 小节改成 %s 小节' % (matrix_bars, config.analysis_window_bars)
+               if stale_all else '声部识别早于最近一次谱面解析')
         result['window_warning'] = (
-            f'有 {len(matrix_mismatch)} 个窗（起始小节 {matrix_mismatch[:6]}）'
-            '在声部识别的显著性矩阵里找不到对应记录，已按静默处理。'
-            '请在「分析旋律」里重跑声部识别，或把窗口长度改回原值。')
+            f'声部识别的显著性矩阵与当前谱面对不上（{why}），'
+            f'{len(matrix_filled)} 个窗的显著性已按同一套算法在本步就地重算，'
+            '分段结果不受影响；若不放心可在「分析旋律」里重跑声部识别。')
 
     if not segments:
         result['note'] = '全曲没有可用于追踪的有音高事件（可能整谱静默或全为打击乐）。'

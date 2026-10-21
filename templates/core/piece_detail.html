@@ -531,6 +531,16 @@ function playBtn(url, label) {
     data-midi-url="${mediaUrl(url)}" title="试听${label}（合成音，仅核对用）">▶ ${label}</button>`;
 }
 
+/* 低音区声部不参与主旋律竞选（主旋律在高音区） */
+function lowRegLine(o) {
+  const names = (o && o.low_register_names) || [];
+  if (!names.length) return '';
+  return `<div class="kv muted small"><b>低音区声部（不参与竞选）：</b>`
+    + `${names.map(n => escapeHtml(n)).join('、')}`
+    + ` <span class="muted small">—— 平均音高低于 C3、且比全曲最高声部低 ≥2 个八度；`
+    + `这类声部靠"长时值 + 高重复 + 稀疏"常在显著性上压过真旋律。</span></div>`;
+}
+
 /* 本次产物是第几次运行：文件名里就带着 rN，重跑不覆盖以前那几份 */
 function runTagLine(o) {
   const n = (o && o.export_run_seq) ? o.export_run_seq : 0;
@@ -929,6 +939,7 @@ const RENDERERS = {
         ? `<div class="kv"><b>人声声部：</b>${(o.voice_parts || [])
             .map(p => escapeHtml(p.name)).join('、')}</div>`
         : '<div class="kv muted"><b>本作品无人声声部</b>，全程按显著性选轨。</div>') +
+      lowRegLine(o) +
       (segs.length ? tableFrom(rows, ['小节', '长度', '归属声部', '音符数', '置信度'])
         : '<p class="muted small">没有可追踪的段落。</p>') + shapeBlock +
       (cov.ratio !== undefined

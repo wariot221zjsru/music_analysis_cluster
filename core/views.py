@@ -589,7 +589,7 @@ def melody_export_download(request, piece_id: int):
             label += f"（候选{pick['key'].split('_')[-1]}）"
 
     try:
-        part = mex.finalize_part(pick['part'])
+        part = mex.finalize_part(pick['part'], pick.get('time_sig'))
         with tempfile.TemporaryDirectory() as td:
             fp = os.path.join(td, f'export.{fmt}')
             part.write(fmt, fp=fp)

@@ -354,18 +354,44 @@ def apply_instruments(part, data: ScoreData, spans: list, options: dict) -> str:
     return f'各段原始音色（{desc}{more}）'
 
 
-def finalize_part(part):
-    """导出前补齐小节结构与休止（留白段也要占满小节）。"""
+def source_time_sig(data) -> dict | None:
+    """原谱的第一个拍号（导出分小节时要用）。
+
+    3/4、6/8 这类拍号若不写进导出谱，music21 的 makeMeasures 会一律按 4/4
+    切小节 —— 3/4 的曲子导出来每小节被塞进 4 拍，节奏整个错位、小节数也对不上。
+    """
+    ts = getattr(data, 'time_signatures', None)
+    if not ts:
+        return None
+    try:
+        n = int(ts[0].get('numerator') or 4)
+        d = int(ts[0].get('denominator') or 4)
+    except (TypeError, ValueError, IndexError, AttributeError):
+        return None
+    return {'numerator': n, 'denominator': d} if n > 0 and d > 0 else None
+
+
+def finalize_part(part, time_sig: dict | None = None):
+    """导出前补齐小节结构与休止（留白段也要占满小节）。
+
+    ``time_sig`` 形如 ``{'numerator': 3, 'denominator': 4}``，取原谱拍号
+    （见 :func:`source_time_sig`），插到导出谱最开头再分小节。
+    """
     from music21 import stream
 
     try:
         has_measure = bool(part.recurse().getElementsByClass(stream.Measure))
     except Exception:  # noqa: BLE001
         has_measure = False
-    if not has_measure:
-        try:
-            part = part.makeMeasures(inPlace=False)
-            part.makeRests(fillGaps=True, inPlace=True)
-        except Exception:  # noqa: BLE001
-            pass
+    if has_measure:
+        return part
+    try:
+        if time_sig:
+            from music21 import meter
+            part.insert(0.0, meter.TimeSignature(
+                f'{time_sig["numerator"]}/{time_sig["denominator"]}'))
+        part = part.makeMeasures(inPlace=False)
+        part.makeRests(fillGaps=True, inPlace=True)
+    except Exception:  # noqa: BLE001
+        pass
     return part
