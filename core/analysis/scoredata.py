@@ -17,6 +17,11 @@ class NoteEvent:
     midi_pitches: List[int]  # 发声音高（MIDI 号；和弦多元素；无音高打击乐为空）
     is_chord: bool           # 是否同 Part 同时发声（≥2 音）
     is_percussion: bool = False     # 打击乐事件（无确定音高 / 鼓组映射音高）
+    velocity: object = None         # 力度（MIDI velocity 1–127）；谱面没标力度时为 None
+
+    @property
+    def has_dynamics(self) -> bool:
+        return isinstance(self.velocity, (int, float))
 
 
 @dataclass
@@ -26,7 +31,8 @@ class PartInfo:
     name: str                       # Part 名
     instrument: str = ''            # 乐器名（可能为空）
     is_voice: bool = False          # 是否人声类音色
-    is_percussion: bool = False     # 是否打击乐声部
+    is_percussion: bool = False     # 是否**无音高**打击乐声部（鼓组 / 节奏打击乐）
+    is_pitched_percussion: bool = False   # 是否**有音高**打击乐（颤音琴 / 钟琴 / 马林巴 …）
     midi_program: object = None     # MIDI 音色号（谱面读不到时为 None）
     events: List[NoteEvent] = field(default_factory=list)
 
@@ -56,6 +62,24 @@ class PartInfo:
         allp = [p for e in self.pitched_events for p in e.midi_pitches]
         return sum(allp) / len(allp) if allp else 0.0
 
+    @property
+    def dynamics_coverage(self) -> float:
+        """有力度数据的发声事件占比（0–1）。
+
+        0 表示「这份谱完全没标力度」——下游必须据此**不作任何力度推断**，
+        不能反过来当成"力度都一样"或"力度为零"。
+        """
+        evs = self.pitched_events
+        if not evs:
+            return 0.0
+        return sum(1 for e in evs if e.has_dynamics) / len(evs)
+
+    @property
+    def mean_velocity(self):
+        """有力度数据的那些事件的平均力度；一个都没有时返回 None。"""
+        vals = [e.velocity for e in self.pitched_events if e.has_dynamics]
+        return round(sum(vals) / len(vals), 2) if vals else None
+
 
 @dataclass
 class ScoreData:
@@ -69,9 +93,26 @@ class ScoreData:
     part_names: List[str] = field(default_factory=list)
 
 
-# 打击乐声部识别用的名称关键词（声部名 / 乐器名命中即判为打击乐）
-_PERCUSSION_NAME_KEYS = ('drum', 'percussion', 'perc.', 'timpani', 'cymbal',
+# 打击乐声部识别用的名称关键词（声部名 / 乐器名命中即判为**无音高**打击乐）
+_PERCUSSION_NAME_KEYS = ('drum', 'percussion', 'perc.', 'cymbal',
                          'triangle', 'tambourine', 'woodblock', '打击', '鼓')
+
+# 有音高打击乐：**有确定音高、能奏旋律**，绝不能当"无音高打击乐"把音高丢掉。
+#
+# 为什么必须单独列一张表：music21 把颤音琴 / 钟琴 / 马林巴 / 木琴 / 定音鼓
+# 都归在 ``instrument.Percussion`` 家族下（``PitchedPercussion``），
+# 单看"是不是 Percussion"会把它们和军鼓、底鼓一视同仁 —— 于是整条旋律
+# 在解析入口就被滤成"无音高事件"，声部识别 / 主旋律线**根本看不见它**。
+# 实测：一首曲子的前半段主题全在颤音琴 + 钟琴上（64 个音，G4–F5），
+# 后半段同样的主题交给合唱 + 人声；前半段因为这条规则被判成打击乐，
+# 主旋律线只能退而求其次报"钢琴伴奏"，覆盖率看着 100%、其实全是错的声部。
+_PITCHED_PERCUSSION_NAME_KEYS = (
+    'vibraphone', 'vibes', 'glockenspiel', 'marimba', 'xylophone', 'celesta',
+    'kalimba', 'timpani', 'kettledrum', 'steel drum', 'steeldrum', 'dulcimer',
+    'tubular bell', 'chimes', 'carillon', 'glock', 'marimba',
+    '颤音琴', '钟琴', '马林巴', '木琴', '钢片琴', '定音鼓', '排钟', '管钟',
+    '铝板琴', '颤音铁琴',
+)
 
 # 人声判定：声部名 / 乐器名命中即判为人声
 _VOICE_NAME_KEYS = ('voice', 'vocal', 'vocalist', 'choir', 'chorus', 'soprano',
@@ -92,13 +133,41 @@ _VOICE_MIDI_PROGRAMS = (52, 53, 54)
 _CHOIR_BASS_NAMES = ('bass', 'basses', 'basso', 'bassi', 'bass voice')
 
 
+def is_pitched_percussion(part, info: 'PartInfo') -> bool:
+    """判定一个声部是否为**有音高打击乐**（颤音琴 / 钟琴 / 马林巴 / 定音鼓 …）。
+
+    两条判据命中任一即可：
+      ① 乐器对象是 music21 的 ``PitchedPercussion`` 子类
+         （Vibraphone / Glockenspiel / Marimba / Xylophone / Timpani / Kalimba /
+         SteelDrum / Dulcimer …，而 SnareDrum / BassDrum / Woodblock 是
+         ``UnpitchedPercussion``，不在此列）；
+      ② 声部名 / 乐器名命中已知的有音高打击乐关键词（乐器对象缺失时兜底）。
+
+    这类声部**有确定音高、能奏旋律**，音高必须参与和弦 / 调性 / 旋律分析；
+    它只是音色上属于打击乐家族。
+    """
+    from music21 import instrument as m21instrument
+
+    try:
+        inst = part.getInstrument(returnDefault=False)
+    except Exception:  # noqa: BLE001
+        inst = None
+    if inst is not None and isinstance(inst, m21instrument.PitchedPercussion):
+        return True
+    blob = f'{info.name} {info.instrument}'.lower()
+    return any(k in blob for k in _PITCHED_PERCUSSION_NAME_KEYS)
+
+
 def _is_percussion_part(part, info: 'PartInfo') -> bool:
-    """判定一个声部是否为打击乐。
+    """判定一个声部是否为**无音高**打击乐（鼓组 / 节奏打击乐）。
 
     三条判据命中任一即可（前两条在 MusicXML 有效，第三条兜住纯 MIDI）：
-      ① 乐器对象是 music21 Percussion 家族；
+      ① 乐器对象是 music21 的 ``UnpitchedPercussion``；
       ② MIDI 通道 = 9（GM 标准打击乐通道）；
-      ③ 声部名 / 乐器名含打击乐关键词。
+      ③ 声部名 / 乐器名含无音高打击乐关键词。
+
+    **有音高打击乐不算**：它是能奏旋律的声部，音高丢了整条旋律就找不回来
+    （见 :data:`_PITCHED_PERCUSSION_NAME_KEYS` 的说明）。
     """
     from music21 import instrument as m21instrument
 
@@ -108,10 +177,15 @@ def _is_percussion_part(part, info: 'PartInfo') -> bool:
     except Exception:  # noqa: BLE001
         inst = None
     if inst is not None and isinstance(inst, m21instrument.Percussion):
-        return True
+        # Percussion 家族里只有 PitchedPercussion（颤音琴 / 钟琴 / 马林巴 /
+        # 定音鼓 …）有确定音高；其余（军鼓 / 底鼓 / 木琴以外的节奏打击乐）
+        # 都是无音高的鼓组映射号。
+        return not isinstance(inst, m21instrument.PitchedPercussion)
     if inst is not None and getattr(inst, 'midiChannel', None) == 9:
         return True
     blob = f'{info.name} {info.instrument}'.lower()
+    if any(k in blob for k in _PITCHED_PERCUSSION_NAME_KEYS):
+        return False
     return any(k in blob for k in _PERCUSSION_NAME_KEYS)
 
 
@@ -156,6 +230,89 @@ def detect_voice(musicxml_path: str) -> dict:
         'part_count': len(data.parts),
         'method': '谱面声部元数据（声部名 / 乐器名 / 人声 MIDI 音色）',
     }
+
+
+# ------------------------------------------------------------- 力度
+# 「听感上谁更突出」离不开力度：两条默认 ff 的旋律线索分不出高下时，耳朵会
+# 跟着响的那条走。music21 能读出力度，但有**三种写法**，必须都接住：
+#
+#   ① 音符自带力度：MIDI 的 note-on velocity、MusicXML 的
+#      <note dynamics="…">（MuScriptor / MuseScore 导出的常见写法），
+#      由 ``n.volume.velocity`` 直接给出 —— 最可靠，逐个音都可能有区别；
+#   ② 上下文力度记号：MusicXML 的 <direction><dynamics>（p / mf / ff …）。
+#      music21 会解析成 ``dynamics.Dynamic`` 对象，**不会**自动落到音符上
+#      （实测：写了两个 Dynamic 后重解析，音符 velocity 仍为 None），
+#      所以得自己按"该音之前最近的一次记号"回填；
+#   ③ 都没有 → None，意思是"谱面没说"。
+#
+# ③ 是关键：不能把"没标力度"当成"力度相同"或"力度为 0"。下游拿到 None 必须
+# **完全不作判定**，否则所有没标力度的大谱的安全边界会被悄悄改写。
+DYNAMIC_VELOCITY_MAX = 127
+
+
+def note_velocity(el):
+    """音符对象自带的力度（来源 ①）；没有则 None。"""
+    vol = getattr(el, 'volume', None)
+    if vol is None:
+        return None
+    try:
+        v = getattr(vol, 'velocity', None)
+    except Exception:  # noqa: BLE001
+        return None
+    if v is None:
+        return None
+    try:
+        v = int(round(float(v)))
+    except (TypeError, ValueError):
+        return None
+    return v if 0 < v <= DYNAMIC_VELOCITY_MAX else None
+
+
+def dynamic_mark_to_velocity(el):
+    """music21 的力度记号 ``dynamics.Dynamic`` → MIDI velocity（来源 ②）。
+
+    按 ``volumeScalar`` 折算（ff≈0.85→108、mf≈0.65→83、p≈0.35→44），
+    与 music21 自己的响度模型保持一致。
+    """
+    try:
+        scalar = float(getattr(el, 'volumeScalar', 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if scalar <= 0:
+        return None
+    return max(1, min(DYNAMIC_VELOCITY_MAX,
+                      int(round(scalar * DYNAMIC_VELOCITY_MAX))))
+
+
+def _iter_dynamics(container, base: float = 0.0):
+    """递归遍历容器，yield ``(力度记号, 相对 container 的偏移)``。
+
+    与 :func:`_iter_notes` 同一套递归写法（手工累加偏移、不依赖 activeSite），
+    两种记号{(音符, 力度记号)}的偏移才能真正对齐。
+    """
+    from music21 import dynamics as m21dynamics
+    for el in container:
+        off = base + float(el.offset)
+        if getattr(el, 'isStream', False):
+            yield from _iter_dynamics(el, off)
+        elif isinstance(el, m21dynamics.Dynamic):
+            yield off, el
+
+
+def velocity_at(dyn_marks: list, offset: float, tol: float = 1e-6):
+    """``dyn_marks``（按偏移升序）里取 offset 之前最后一次力度记号 → velocity。
+
+    力度记号是**持续有效**的（一直管到下一个记号出现），所以取"之前最近的那次"，
+    而不是"同一位置的那次"。没有则返回 None（谱面没说）。
+    """
+    cur = None
+    for off, el in dyn_marks:
+        if off > offset + tol:
+            break
+        v = dynamic_mark_to_velocity(el)
+        if v is not None:
+            cur = v
+    return cur
 
 
 def _iter_notes(container, base: float = 0.0):
@@ -276,6 +433,8 @@ def parse_score(musicxml_path: str) -> ScoreData:
             info.instrument = ''
 
         info.is_percussion = _is_percussion_part(part, info)
+        info.is_pitched_percussion = (not info.is_percussion
+                                      and is_pitched_percussion(part, info))
         info.is_voice = _is_voice_part(part, info)
 
         try:
@@ -283,6 +442,11 @@ def parse_score(musicxml_path: str) -> ScoreData:
         except Exception:
             part_offset = 0.0
         has_unpitched = False
+        # 该声部的力度记号（上下文来源 ②），按偏移升序；解析失败就当"没标力度"
+        try:
+            dyn_marks = sorted(_iter_dynamics(part), key=lambda t: t[0])
+        except Exception:  # noqa: BLE001
+            dyn_marks = []
         for n, rel_off in _iter_notes(part):
             n_cls = getattr(n, 'classes', ()) or ()
             # 无音高打击乐：Unpitched（单音）与 PercussionChord（同时敲多件鼓）。
@@ -298,18 +462,29 @@ def parse_score(musicxml_path: str) -> ScoreData:
             else:
                 # 未知的无音高对象：作为纯节奏事件保留，绝不静默丢弃
                 pitches = []
+            # 力度：先取音符自带的，没有就用它之前最近的一次力度记号；
+            # 两者都没有 → None（谱面没标力度，下游不得据此推断）。
+            try:
+                vel = note_velocity(n)
+                if vel is None:
+                    vel = velocity_at(dyn_marks, rel_off)
+            except Exception:  # noqa: BLE001
+                vel = None
             offset = part_offset + rel_off
             ql = float(n.duration.quarterLength)
             m_no = measure_of(offset)
             info.events.append(NoteEvent(
                 part_index=pi, offset=offset, duration=ql,
                 measure=m_no, midi_pitches=pitches,
-                is_chord=len(pitches) > 1,
+                is_chord=len(pitches) > 1, velocity=vel,
                 is_percussion=bool(info.is_percussion or not pitches)))
             max_measure = max(max_measure, m_no)
             max_ql = max(max_ql, offset + ql)
         if has_unpitched:
+            # 谱面里真的出现了 Unpitched / PercussionChord（鼓谱常见）——
+            # 无论乐器标的是什么，都按无音高打击乐处理。
             info.is_percussion = True
+            info.is_pitched_percussion = False
         parts.append(info)
 
     # 合唱谱兜底：SATB 里的 "Bass" 单看像贝斯，但同谱已检出明确人声时应算人声

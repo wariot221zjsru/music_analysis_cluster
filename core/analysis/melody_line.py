@@ -52,51 +52,300 @@ from .scoredata import (
 
 
 def _window_choices(matrix_row: dict, data: ScoreData,
-                    low: set = frozenset()) -> list:
+                    low: set = frozenset(), doubles: dict | None = None) -> list:
     """一个窗的 {part_index: salience} → 按显著性降序的候选列表。
 
     ``low`` 是低音区声部（比全曲最高声部低 ≥ 2 个八度），在这里**只打标记**
     不剔除：主旋律在高音区，选人时排除它们（见 :func:`_pick`），但算置信度
     的 margin 仍把它们算作竞争对手 —— 否则"贝斯被排除"会让置信度虚高到
     满分，反而看不出这段到底有多确定。
+
+    ``doubles`` 是齐奏加倍分组（见 :func:`voice_id.doubling_groups`）：同一条
+    旋律被多件乐器同奏时它们算**同一条线索**，互相之间不构成竞争。
     """
+    doubles = doubles or {}
     items = []
     for idx, sc in matrix_row.get('scores', {}).items():
         i = int(idx)
+        group = doubles.get(i, i)
+        peers = sorted(j for j, g in doubles.items() if g == group and j != i)
         items.append({
             'part_index': i,
             'part_name': data.part_names[i] if i < len(data.part_names) else f'Part {i}',
             'salience': float(sc),
             'is_voice': data.parts[i].is_voice if i < len(data.parts) else False,
             'low_register': i in low,
+            # 同组 = 同一条旋律（齐奏加倍），算 margin 时互相排除
+            'group': group,
+            'doubled_with': peers,
         })
     items.sort(key=lambda d: -d['salience'])
     return items
 
 
-def _pick(choices: list, voice_priority: bool):
-    """窗内选轨：人声优先 → 否则显著性最高。返回 (选中项, margin)。
+# --------------------------------------------------- 低音区保护（"整首都是低音"）
+# 「低音区声部不竞选主旋律」是一条**经验先验**（主旋律通常在更高的音区），
+# 不是物理定律。遇到下面两种情形它必须让路：
+#
+#   ① **整首曲子都在低音区**。这一条相对差判据自己就处理了 —— 没有人比它
+#      高两个八度，`low_register_parts` 返回空集，谁都不排除（实测：大号 /
+#      大提琴 / 低音提琴三声部曲子，最高声部平均 51.8，无人被判低音区）。
+#
+#   ② **某个低音声部听感上绝对占优**：贝斯主奏、主题本来就在低音区、上方
+#      只剩一个持续音铺底 / 零星装饰。这时候再把它排除，报出来的主旋律就是
+#      那个每小节打两下的踏板音 —— 比报错覆盖率更糟。
+#
+# 翻盘要**两条独立证据同时成立**才生效 —— 单看任何一条都会误伤：
+#
+#   证据 ① 形态轮廓（contour_shape）：低音线条的级进比 / 拱形度是否明显比
+#          同窗**所有**非低音候选更像一条旋律。光看这条不够 —— 走动贝斯的
+#          轮廓常常比稀疏的长笛旋律还漂亮（实测形态差 0.199，却不该翻盘）。
+#   证据 ② 实质占比（substance）：把显著性里的"平均音高"这一项**拿掉**，
+#          只比时值 / 动机重复 / 密度三项。拿掉音高项是因为它恰好就是
+#          "高音区更像主旋律"这条先验本身，留着比等于没比（低音永远输在这一项）。
+#
+# 再加一条**力度**（谱面标了力度才作数，见 :data:`DYNAMICS_MIN_SUPPORT`）：
+#
+#   证据 ③ 力度（dynamics）：这条线听着是不是真的压过上方。谱面把它写成
+#          更弱（力度差 < −4）就**不许翻盘** —— 力度记号是作曲家写下的聆听
+#          指示，它说这条线是退让的；反过来明显更响（≥ +8）时，另两条门槛
+#          按比例放宽到一半 —— 力度已经替这条线把话说了一半。
+#
+# 前两条同时达标才说明**不是音区在说话，是这条线本身更能听**；第三条决定
+# 这份"更能听"要不要打折、要不要干脆否决：
+#   低音主奏 + 高音长音铺底     形态 +0.145、实质 +0.334  → 翻盘 ✓
+#   贝斯主奏 + 柱式和弦伴奏     形态 +0.789、实质 +0.334  → 翻盘 ✓
+#   走动贝斯 + 稀疏长笛旋律     形态 +0.199、实质  0.000  → 不翻盘 ✓
+#   naik 的贝斯（基线）         形态 +0.019、实质 -0.057  → 不翻盘 ✓
+#   两条都达标、但低音写得比上方 pp → 不翻盘 ✓（力度否决）
+#   轮廓 / 实质领先不足一半、低音写得比上方 ff → 翻盘 ✓（力度放宽门槛）
+LOW_REGISTER_SHAPE_LEAD = 0.10      # 证据①：形态分要高出多少
+LOW_REGISTER_SUBSTANCE_LEAD = 0.15  # 证据②：去音高项的显著性要高出多少
+LOW_MELODY_MIN_PITCHES = 3          # 至少几个不同音高
+LOW_MELODY_MIN_RANGE = 4            # 至少跨多少半音（一个大三度）
+
+
+# -------------------------------------------------- 力度（"听感"的直接证据）
+# 力度不进显著性四项：那四项是所有模块共用的尺度，动它会连带改写已标定的置信度
+# 分级、历史产物与全部实测结论。它只在两个地方说话：
+#
+#   ① 低音区翻盘（本节第三/四条证据）：明显更弱的低音不许翻盘 —— 谱面都把它
+#      写成 pp 了，它就不可能是"听感占优"的那条；明显更响的低音，则把另两条
+#      门槛按比例放宽 —— 力度已经替它把话说一半了；
+#   ② 显著性分不出高下（≤ DYNAMICS_TIEBAND）时，响的那个赢（见 :func:`_pick`）。
+#
+# **谱面没标力度时整条链路完全不生效**（velocity 为 None → 力度差为 None →
+# 不作判定），没有力度数据的曲子结果与以前逐位一致。
+DYNAMICS_MIN_SUPPORT = 0.5   # 参与比较的声部，窗内至少一半事件要有力度数据
+DYNAMICS_TIEBAND = 0.03      # 显著性差距在此以内视为"分不出高下"
+DYNAMICS_TOLERANCE = 4       # 力度差在 ±4/127 以内算打平（耳朵听不出）
+DYNAMICS_LEAD = 8            # 差这么多才算"明显更响"（约一个力度级别）
+DYNAMICS_RELAX = 0.5         # 力度明显占优时，翻盘两条门槛按此比例放宽
+DYNAMICS_CONF_DIVISOR = 64   # 打平裁决的置信度 = 力度领先 / 该值（封顶 1.0）
+
+
+def looks_like_line(seq: list) -> bool:
+    """这条音高序列够不够格叫"一条旋律线"（不同音高数与跨度下限）。
+
+    少了这道闸不行：只在一个音上打点的踏板音，级进比 / 拱形度 / 平滑度
+    三项全都满分（形态分 1.0），比真旋律还高。
+    """
+    if len(set(seq)) < LOW_MELODY_MIN_PITCHES:
+        return False
+    return (max(seq) - min(seq)) >= LOW_MELODY_MIN_RANGE
+
+
+def _part_dyn(per_part: list):
+    """per_part → ({part_index: 平均力度}, {part_index: 力度数据覆盖率})。
+
+    老产物（改这条规则之前存的 dict）里没有 ``dyn`` / ``dyn_support`` 键，
+    ``.get`` 会得到 None / 0.0 —— 与"谱面没标力度"同一处理路径，自动失效。
+    """
+    dyn = {d['part_index']: d.get('dyn')
+           for d in (per_part or []) if not d.get('empty')}
+    sup = {d['part_index']: float(d.get('dyn_support') or 0.0)
+           for d in (per_part or []) if not d.get('empty')}
+    return dyn, sup
+
+
+def dynamics_lead(per_part: list, cand: int, rivals: list):
+    """候选相对一组竞争对手的平均力度差（velocity 单位，1–127）。
+
+    返回 ``None`` = **不作判定**，调用方必须原样放行：
+      * 候选或对手任何一方没有力度数据（谱面没标）；
+      * 参与比较的声部里有谁窗内力度覆盖率 < :data:`DYNAMICS_MIN_SUPPORT`
+        （零星几个音的均值说明不了整段的响度）；
+      * 根本没有对手可参照（没有参照就谈不上"领先"）。
+    """
+    if per_part is None or not rivals:
+        return None
+    dyn, sup = _part_dyn(per_part)
+    base = dyn.get(cand)
+    if base is None:
+        return None
+    others = [dyn.get(r) for r in rivals]
+    others = [v for v in others if isinstance(v, (int, float))]
+    if not others:
+        return None
+    involved = [cand] + [r for r in rivals
+                         if isinstance(dyn.get(r), (int, float))]
+    if any(sup.get(i, 0.0) < DYNAMICS_MIN_SUPPORT for i in involved):
+        return None
+    return round(base - max(others), 2)
+
+
+def low_register_overrides(data: ScoreData, items: list, s: float, e: float,
+                           per_part: list | None = None) -> dict:
+    """窗内哪些低音区声部该因"听感占优"回来当主旋律。
+
+    返回 ``{part_index: {'shape': 形态分, 'shape_lead': 领先多少,
+    'substance_lead': 去音高项领先多少, 'dyn_lead': 平均力度差（None=没数据）}}``；
+    不该翻盘时返回空字典。
+
+    ``items`` 是窗内候选（同 :func:`_window_choices` 的形状）；``per_part``
+    可直接传 :func:`voice_id.window_scores` 的结果，省掉一次重算。
+    没有任何非低音候选时返回空 —— 那种情形由"整窗只剩低音在响"兜底处理。
+    """
+    lows = [c for c in items if c.get('low_register')]
+    others = [c for c in items if not c.get('low_register')]
+    if not lows or not others:
+        return {}
+    from . import voice_id as voice_mod    # 懒加载：避免模块级循环依赖
+    if per_part is None:
+        per_part = voice_mod.window_scores(data, s, e)['per_part']
+    sub = {d['part_index']: d.get('substance', 0.0)
+           for d in per_part if not d.get('empty')}
+    seqs = {c['part_index']: _seg_pitch_seq(data, c['part_index'], s, e)
+            for c in items}
+    # 上方候选的音符太少（形态分为 None，不作判定）→ **不翻盘**。
+    # 证据不足应当维持原判，不能反过来让低音占便宜（naik 的尾声就是这样：
+    # 最后两小节只有钢琴两三个音，贝斯的显著性反而更高）。
+    shapes = {}
+    for c in others:
+        sc = contour_shape(seqs[c['part_index']])['score']
+        if sc is None:
+            return {}
+        shapes[c['part_index']] = sc
+    # 上方候选里真正"像一条旋律线"的那些（不同音高够多、跨度够大）
+    line_like = [c for c in others if looks_like_line(seqs[c['part_index']])]
+    out = {}
+    for c in lows:
+        seq = seqs[c['part_index']]
+        sh = contour_shape(seq)
+        if sh['score'] is None or not looks_like_line(seq):
+            continue
+        # 参照对象：有"成线的"上方候选就只比它们（避免拿踏板当标尺），
+        # 否则退一步跟所有上方候选比 —— 力度问的是"谁听着更响"，与
+        # 对手成不成线无关。
+        rivals = [o['part_index'] for o in (line_like or others)]
+        lead_dyn = dynamics_lead(per_part, c['part_index'], rivals)
+        # 力度明显弱于对手 → 不许翻盘。谱面都把它写成更弱了，它就不可能是
+        # "听感占优"的那条；这条优先于下面所有放行的分支。
+        if lead_dyn is not None and lead_dyn < -DYNAMICS_TOLERANCE:
+            continue
+        # 力度明显占优 → 另两条门槛按比例放宽（力度已经替它把话说了一半）
+        relax = (DYNAMICS_RELAX
+                 if (lead_dyn is not None and lead_dyn >= DYNAMICS_LEAD)
+                 else 1.0)
+        if not line_like:
+            # 上方留下的全是持续音铺底 / 踏板 / 两个音来回的摇摆，只是因为
+            # **音区高**才被留下 —— 它压不住低音区那条真正在走的线。
+            out[c['part_index']] = {'shape': sh['score'], 'shape_lead': None,
+                                    'substance_lead': None, 'dyn_lead': lead_dyn,
+                                    'dyn_relaxed': relax < 1.0,
+                                    'reason': 'no_line_like_counterpart'}
+            continue
+        lead_shape = sh['score'] - max(shapes[o['part_index']] for o in line_like)
+        lead_sub = (sub.get(c['part_index'], 0.0)
+                    - max(sub.get(o['part_index'], 0.0) for o in line_like))
+        if (lead_shape >= LOW_REGISTER_SHAPE_LEAD * relax
+                and lead_sub >= LOW_REGISTER_SUBSTANCE_LEAD * relax):
+            out[c['part_index']] = {
+                'shape': sh['score'],
+                'shape_lead': round(lead_shape, 4),
+                'substance_lead': round(lead_sub, 4),
+                'dyn_lead': lead_dyn,
+                'dyn_relaxed': relax < 1.0,
+            }
+    return out
+
+
+def best_override(overrides: dict):
+    """多个低音声部都够格时取形态分最高的那个；没有则返回 None。"""
+    if not overrides:
+        return None
+    return max(overrides, key=lambda k: overrides[k]['shape'])
+
+
+def _pick(choices: list, voice_priority: bool, override: dict | None = None,
+          per_part: list | None = None):
+    """窗内选轨：低音翻盘 → 人声优先 → 显著性最高 → 力度裁决。返回 (选中项, margin)。
 
     低音区声部**不参与竞选**（主旋律在高音区），但仍是 margin 的竞争对手；
     整窗只剩低音在响时才让它上，绝不把整窗记成静默。
+
+    ``override`` 是 :func:`low_register_overrides` 认可的例外 —— 低音线条在
+    "轮廓更像旋律"与"实质占比更高"两条证据上都压过上方候选时**直接当选**，
+    不再按显著性排队：显著性里的"平均音高"和"密度倒数"两项本身就是
+    "高音区更像主旋律"这条先验，留着比等于没比，低音永远输在这两项上。
+    置信度取"显著性领先"与"形态领先"里的较大者 —— 翻盘是因为形态证据强，
+    不是因为显著性分数高，否则会一边翻盘一边报"置信度 0"。
+
+    ``per_part``（:func:`voice_id.window_scores` 的结果，带 ``dyn``）用于最后一步
+    **力度裁决**：显著性差 ≤ :data:`DYNAMICS_TIEBAND` 时两条线在四项上其实分不出
+    高下，这时谱面写得更响（力度差 ≥ :data:`DYNAMICS_LEAD`）的那条顶上来 —— 耳朵
+    会跟着响的那条走。没有力度数据时（``None``）这一步整个跳过，结果不变。
     """
     if not choices:
         return None, 0.0
-    eligible = [c for c in choices if not c.get('low_register')] or choices
+    override = override or {}
+
+    def _ok(c) -> bool:
+        return not c.get('low_register') or c['part_index'] in override
+
+    eligible = [c for c in choices if _ok(c)] or choices
 
     def _margin(best: dict) -> float:
+        # 竞争对手只算**有资格当主旋律**的声部：
+        #   ① 齐奏加倍的"对手"其实是同一条旋律，不算竞争 —— 否则两者的显著性
+        #      逐位相同，margin 恒为 0，明明稳稳选对了却报"置信度 0"；
+        #   ② 低音区声部同样不算 —— 它靠"长时值 + 高重复 + 稀疏"在窗内
+        #      min-max 归一里系统性偏高，拿它当基准会把所有段的置信度压成 0
+        #      （这正是当初要在选主旋律时排除它的同一个理由）。
+        #      例外：已经按"听感占优"恢复资格的低音，它配得上当基准。
         rivals = [c['salience'] for c in choices
-                  if c['part_index'] != best['part_index']]
-        # 只有一个声部在响：无竞争 → 记为完全确定
+                  if c['group'] != best['group'] and _ok(c)]
+        # 没有合格的对手：整窗只有它（和它的齐奏加倍）在竞选 → 完全确定
         if not rivals:
             return 1.0
         return max(best['salience'] - max(rivals), 0.0)
+
+    win = best_override(override)
+    if win is not None:
+        best = next((c for c in choices if c['part_index'] == win), None)
+        if best is not None:
+            info = override[win]
+            # 上方没有像旋律的候选时，参考的就是它自己的形态分；其余按领先量
+            lead = info.get('shape_lead')
+            lead = info['shape'] if lead is None else lead
+            return best, round(max(_margin(best), lead), 4)
 
     if voice_priority:
         voices = [c for c in eligible if c['is_voice']]
         if voices:
             best = max(voices, key=lambda c: c['salience'])   # 多人声取最显著那条
             return best, round(_margin(best), 4)
+    # 力度裁决：显著性分不出高下时，听感上更响的那条赢（要有力度数据才作数）。
+    # 只在这一种情形下改判 —— 差距明显时不插手，显著性的判断优先。
+    if per_part and len(eligible) >= 2:
+        top, second = eligible[0], eligible[1]
+        if abs(top['salience'] - second['salience']) <= DYNAMICS_TIEBAND:
+            lead_dyn = dynamics_lead(per_part, second['part_index'],
+                                     [top['part_index']])
+            if lead_dyn is not None and lead_dyn >= DYNAMICS_LEAD:
+                return second, round(
+                    max(_margin(second),
+                        min(1.0, lead_dyn / DYNAMICS_CONF_DIVISOR)), 4)
     best = eligible[0]
     return best, round(_margin(best), 4)
 
@@ -405,9 +654,18 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
     # 用户也不必记得"先去重跑声部识别"。
     from . import voice_id as voice_mod      # 懒加载：避免模块级循环依赖
     low = voice_mod.low_register_parts(data)
+    by_note = voice_mod.density_by_note_count(config)   # 密度口径（默认按发音数）
+    # 力度要不要算进"听感"（默认开）：关掉之后整条链路都看不见力度数据 ——
+    # 不是"不让它投票"，而是把它置成活在"谱面没标力度"的状态，
+    # 这样低音区保护、显著性裁决两处的判定会自然跳过，不会漏掉某处。
+    dyn_on = voice_mod.dynamics_aware(config)
     matrix_bars = sal.get('window_bars')
+    # 矩阵是不是按**当前设置**算出来的：窗长、密度口径任一对不上就整表重算
+    # （老产物没有 density_by_note_count 字段 → 视为 True，正是当时的算法）。
     stale_all = (matrix_bars is not None
                  and int(matrix_bars) != int(config.analysis_window_bars))
+    if bool(sal.get('density_by_note_count', True)) != by_note:
+        stale_all = True
     by_start = ({} if stale_all
                 else {int(r.get('start_measure', -1)): r for r in matrix})
     missing = [w['start_measure'] for w in windows
@@ -423,18 +681,39 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
                            if (missing or stale_all) else set())
     for w in windows:
         row = by_start.get(w['start_measure'])
+        m_start = measure_offsets.get(w['start_measure'], 0.0)
+        m_end = measure_offsets.get(w['end_measure'] + 1)
+        if m_end is None:
+            m_end = m_start + (w['end_measure'] - w['start_measure'] + 1) * bar_ql
+        per_part = None
         if row is None:
             # 矩阵里没有这个窗 → 按同一套算法就地补算
-            m_start = measure_offsets.get(w['start_measure'], 0.0)
-            m_end = measure_offsets.get(w['end_measure'] + 1)
-            if m_end is None:
-                m_end = m_start + (w['end_measure'] - w['start_measure'] + 1) * bar_ql
-            wsc = voice_mod.window_scores(data, m_start, m_end)
-            row = {'scores': {str(k): v for k, v in wsc['scores'].items()}}
+            per_part = voice_mod.window_scores(data, m_start, m_end,
+                                               by_note_count=by_note)['per_part']
+            row = {'scores': {str(d['part_index']): d['salience']
+                              for d in per_part if not d.get('empty')}}
         win_scores[w['start_measure']] = {
             int(k): float(v) for k, v in (row.get('scores') or {}).items()}
-        choices = _window_choices(row, data, low)
-        best, margin = _pick(choices, voice_priority)
+        # 齐奏加倍：同一条旋律由多件乐器同奏（颤音琴 + 钟琴、小提琴 I + 长笛…）
+        # 在听觉上是一条线索，不该让它们互相"竞争"把置信度压成 0。
+        doubles = voice_mod.doubling_groups(
+            voice_mod.window_signatures(data, m_start, m_end))
+        choices = _window_choices(row, data, low, doubles)
+        # 低音区保护与力度裁决要看窗级的原始字典（substance / dyn）。
+        # 必须**按当前密度口径现算**，不能让它在别处按默认口径再算一遍 ——
+        # 两条路算出两套 substance，同一个窗会有两种归属。
+        if per_part is None and (low or len(choices) > 1):
+            per_part = voice_mod.window_scores(data, m_start, m_end,
+                                               by_note_count=by_note)['per_part']
+        # 关掉力度开关 → 把 dyn 抹成"谱面没标力度"，下游两条判定自动跳过。
+        # 改成新 dict 而不是就地改 per_part：那份还要原样留在窗级结果里。
+        dyn_part = per_part if dyn_on else (
+            None if per_part is None
+            else [{**d, 'dyn': None, 'dyn_support': 0.0} for d in per_part])
+        # 低音区保护：整窗上方没有更像旋律的候选时，低音线条恢复竞选资格
+        ovr = (low_register_overrides(data, choices, m_start, m_end,
+                                      per_part=dyn_part) if low else {})
+        best, margin = _pick(choices, voice_priority, ovr, per_part=dyn_part)
         win_rows.append({
             'window': w['window'],
             'start_measure': w['start_measure'],
@@ -443,6 +722,9 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
             'part_name': best['part_name'] if best else '（无发声声部）',
             'is_voice': bool(best['is_voice']) if best else False,
             'voice_sounding': any(c['is_voice'] for c in choices),
+            'doubled_with': (best.get('doubled_with') or []) if best else [],
+            'low_override': bool(best and best['part_index'] in ovr),
+            'low_override_shape': ovr.get(best['part_index']) if best else None,
             'margin': margin,
             'salience': best['salience'] if best else 0.0,
         })
@@ -537,12 +819,58 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
                    f'（级进比×0.7 + 拱形度×0.15 + 轮廓平滑度×0.15）低于 {shape_min} '
                    '就失去资格，由形态合格且显著性最高的声部顶上；'
                    '音符太少不足以统计时不作判定，所有声部都不合格时保留原归属。')
+    # 齐奏加倍：整条旋律线索由多件乐器同奏时说清楚，免得置信度看着"凭空变高"
+    doubled = {}
+    for r in win_rows:
+        for j in r.get('doubled_with') or []:
+            doubled.setdefault(r['part_name'], set()).add(data.parts[j].name)
+    if doubled:
+        method += ('齐奏加倍（' + '；'.join(
+            f'{k} 与 {"、".join(sorted(v))} 同奏同一条旋律' for k, v in doubled.items())
+            + '）视为同一条听觉线索，不计入竞争，置信度不因加倍被低估。')
     low_names = [data.parts[i].name for i in sorted(low)] if low else []
+    # 力度：谱面标没标力度，决定了"听感"这条证据能不能用。把它写进结果，
+    # 页面上才能交代清楚 —— 否则用户会以为系统压根没考虑力度。
+    dyn_parts = []
+    for p in data.parts:
+        cov = p.dynamics_coverage
+        if cov > 0:
+            dyn_parts.append({'index': p.index, 'name': p.name,
+                              'coverage': round(cov, 3),
+                              'mean_velocity': p.mean_velocity})
     if low_names:
         # 主旋律在高音区：低音区声部不参与竞选
         method += (f'低音区声部（{"、".join(low_names)}：平均音高低于 C3 且比全曲'
                    '最高声部低 ≥2 个八度）不参与主旋律竞选；'
                    '整窗只剩低音在响时才保留它。')
+    # 低音区保护：哪些低音声部是靠"确实更像一条旋律"翻盘进来的，必须写明白
+    overrides = {}
+    for r in win_rows:
+        if r.get('low_override') and r.get('low_override_shape'):
+            overrides.setdefault(r['part_name'], []).append(
+                r['low_override_shape'])
+    if overrides:
+        detail = []
+        for nm, lst in overrides.items():
+            inf = lst[0]
+            lead_dyn = inf.get('dyn_lead')
+            dyn_tail = ''
+            if lead_dyn is not None and lead_dyn >= DYNAMICS_LEAD:
+                dyn_tail = f'、力度领先 {lead_dyn:.0f}/127（门槛相应放宽）'
+            elif lead_dyn is not None and lead_dyn < -DYNAMICS_TOLERANCE:
+                dyn_tail = (f'、但力度弱于对手 {abs(lead_dyn):.0f}/127'
+                            '（不参与翻盘）')
+            if inf.get('shape_lead') is None:
+                # "上方全是踏板 / 持续音"这条分支不看轮廓门槛，但**照样看力度** ——
+                # 写得比踏板还弱的线不可能靠"没有对手"就当上主旋律
+                detail.append(f'{nm}：上方只剩踏板 / 持续音，没有成线的对手'
+                              + dyn_tail)
+                continue
+            tail = (f'{nm}：轮廓领先 {inf["shape_lead"]:.2f}、'
+                    f'去音高项领先 {inf["substance_lead"]:.2f}')
+            detail.append(tail + dyn_tail)
+        method += (f'低音区保护：{"、".join(overrides)} 虽在低音区，但'
+                   + '；'.join(detail) + '，按"听感占优"承担了这些窗的主旋律。')
     result = {
         'mode': ('逐段追踪（人声掩膜 + 显著性 + 形态资格）' if shape_gate
                  else '逐段追踪（人声掩膜 + 显著性）'),
@@ -556,6 +884,19 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
         # 被判为"低音区、不当主旋律"的声部（不参与逐段竞选）
         'low_register_parts': sorted(low),
         'low_register_names': low_names,
+        # 低音区里靠"更像一条旋律"被重新接纳的声部（见 low_register_overrides）
+        'low_register_overridden': sorted(overrides),
+        'dynamics': {
+            # 开关（系统设置「主旋律判定考虑力度」，默认开）
+            'enabled': dyn_on,
+            # 谱面标没标力度：没标时 notated=False，整条力度链路自动失效，
+            # 既不帮谁也不拦谁（不能把"没标"当成"力度相同"或"力度为零"）
+            'notated': bool(dyn_parts) and dyn_on,
+            'parts': dyn_parts if dyn_on else [],
+            'min_support': DYNAMICS_MIN_SUPPORT,
+            'lead': DYNAMICS_LEAD,
+            'tolerance': DYNAMICS_TOLERANCE,
+        },
         'shape_gate': shape_gate,
         'shape_gate_threshold': shape_min if shape_gate else None,
         'shape_replacements': len(shape_replacements),

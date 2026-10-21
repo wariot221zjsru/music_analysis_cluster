@@ -695,6 +695,11 @@ def system_settings(request):
             config.melody_export_program = int(
                 request.POST.get('melody_export_program') or 0)
             config.analysis_window_bars = int(request.POST['analysis_window_bars'])
+            # 织体密度口径：勾上 = 按发音数（默认），不勾 = 按发声事件数
+            config.density_by_note_count = bool(
+                request.POST.get('density_by_note_count'))
+            # 力度是否参与"听感"判定：勾上 = 算（默认），不勾 = 完全不读力度
+            config.melody_dynamics = bool(request.POST.get('melody_dynamics'))
             config.chord_window = request.POST['chord_window']
             config.dsh_profile = request.POST['dsh_profile'].strip() or 'headless'
             config.dsh_timeout = int(request.POST['dsh_timeout'])

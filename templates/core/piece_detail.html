@@ -531,14 +531,34 @@ function playBtn(url, label) {
     data-midi-url="${mediaUrl(url)}" title="试听${label}（合成音，仅核对用）">▶ ${label}</button>`;
 }
 
-/* 低音区声部不参与主旋律竞选（主旋律在高音区） */
+/* 低音区声部不参与主旋律竞选（主旋律在高音区）；
+   例外：听感上绝对占优的低音会被"低音区保护"接回来 —— 必须标出来，
+   否则用户会疑惑"不是说低音不参与竞选吗，怎么又选了它"。 */
 function lowRegLine(o) {
   const names = (o && o.low_register_names) || [];
   if (!names.length) return '';
-  return `<div class="kv muted small"><b>低音区声部（不参与竞选）：</b>`
+  const saved = (o && o.low_register_overridden) || [];
+  const dyn = (o && o.dynamics) || {};
+  // 三种"力度没起作用"必须说清楚是哪一种，否则用户会以为系统压根没考虑力度：
+  // 开关关了 / 谱面没标 / 标了但覆盖率不够（三种都不是"力度相同"）
+  const dynTip = dyn.notated
+    ? `本谱标了力度，低音翻盘还要再看一条：明显<b>弱</b>于对手的不参与翻盘，`
+      + `明显更响（≥ ${dyn.lead || 8}/127）的可放宽轮廓 / 实质门槛。`
+    : (dyn.enabled === false
+        ? `已在<i>系统设置</i>里关掉「主旋律判定考虑力度」，本结果纯按轮廓 + 实质占比比较。`
+        : `本谱没标力度，"听感"这条证据自动失效（仍按轮廓 + 实质占比比较）。`);
+  const tip = saved.length
+    ? `这类声部靠"长时值 + 高重复 + 稀疏"常在显著性上压过真旋律，所以看的是`
+      + `<b>轮廓 / 实质占比 / 力度</b>；`
+      + `本曲 <b>${saved.map(n => escapeHtml(n)).join('、')}</b> 已按"听感占优"`
+      + `重新接纳为这些窗的主旋律。`
+    : `这类声部靠"长时值 + 高重复 + 稀疏"常在显著性上压过真旋律；`
+      + `整窗只剩它在响时仍会保留它。`;
+  return `<div class="kv muted small"><b>低音区声部`
+    + `${saved.length ? '（部分已按听感占优选用）' : '（不参与竞选）'}：</b>`
     + `${names.map(n => escapeHtml(n)).join('、')}`
     + ` <span class="muted small">—— 平均音高低于 C3、且比全曲最高声部低 ≥2 个八度；`
-    + `这类声部靠"长时值 + 高重复 + 稀疏"常在显著性上压过真旋律。</span></div>`;
+    + `${tip} ${dynTip}</span></div>`;
 }
 
 /* 本次产物是第几次运行：文件名里就带着 rN，重跑不覆盖以前那几份 */
@@ -921,7 +941,8 @@ const RENDERERS = {
     }
     const winRows = (o.windows || []).map(w => [
       `${w.start_measure}–${w.end_measure}`,
-      escapeHtml(w.part_name),
+      escapeHtml(w.part_name)
+      + (w.low_override ? ' <span class="muted small">（低音占优，突破低音区排除）</span>' : ''),
       w.voice_sounding ? '在唱' : '休止',
       w.margin,
     ]);

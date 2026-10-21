@@ -467,6 +467,8 @@ def main():
         'melody_export_tempo_mode': 'changed', 'melody_export_bpm': '88',
         'melody_export_instrument_mode': 'changed', 'melody_export_program': '65',
         'analysis_window_bars': '4', 'chord_window': 'measure',
+        'density_by_note_count': 'on',      # 织体密度默认口径：按发音数
+        'melody_dynamics': 'on',            # 力度参与"听感"判定（默认口径）
         'dsh_profile': 'headless', 'dsh_timeout': '600',
         'max_chord_windows_per_call': '200',
     })

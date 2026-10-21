@@ -158,6 +158,52 @@
     </div>
   </div>
 
+  <h3>显著性 · 织体密度口径</h3>
+  <p class="field-hint">
+    显著性四项里的「织体密度倒数」（越稀疏越像旋律）用哪种算法数音。
+    <b>默认按发音数</b>：柱式和弦伴奏一个事件顶三个音，只数事件会显得它很稀疏，
+    显著性会反超真正的旋律（实测有曲子钢琴伴奏 6 个和弦 18 个音，比 8 个音的主题
+    还被算得更"稀疏"）。按事件数计算的口径保留着——它更接近书写复杂度，
+    想对比两种口径的效果时把它关掉即可。
+  </p>
+  <div class="settings-grid">
+    <div>
+      <label class="checkbox-label">
+        <input type="checkbox" name="density_by_note_count"
+               {% if config.density_by_note_count %}checked{% endif %}>
+        织体密度按发音数计算（推荐）
+      </label>
+      <p class="field-hint">
+        勾上 = 和弦内部每个音都计入密度（默认）；不勾 = 一个和弦只算 1 个发声事件，
+        与早期口径一致。改完请重跑声部识别，主旋律线会自动跟着重算。
+      </p>
+    </div>
+  </div>
+
+  <h3>主旋律判定 · 力度（听感）</h3>
+  <p class="field-hint">
+    <b>主旋律 = 听感上最像主旋律的那条线</b>，各项指标都是在拟合这种"像"。
+    力度是其中最直接的一条证据：两条线其它方面差不多时，耳朵会跟着响的那条走。
+    <b>默认算进去</b>——明显弱于对手的低音不当主旋律（作曲家写它 pp，它就是退让的），
+    明显更响的低音可放宽轮廓 / 实质门槛，显著性分不出高下时偏响的那条赢。
+    <b>谱面没标力度时这项自动失效</b>（既不帮谁也不拦谁）——没标力度不等于力度相同。
+    想退回纯形态 / 显著性的判据时把它关掉即可。
+  </p>
+  <div class="settings-grid">
+    <div>
+      <label class="checkbox-label">
+        <input type="checkbox" name="melody_dynamics"
+               {% if config.melody_dynamics %}checked{% endif %}>
+        主旋律判定考虑力度（推荐）
+      </label>
+      <p class="field-hint">
+        勾上 = 低音区保护与"显著性打平"两种裁决都把力度算进去（默认）；
+        不勾 = 完全不读力度，与加这条能力之前的口径一致。
+        改完请重跑声部识别，主旋律线会自动跟着重算。
+      </p>
+    </div>
+  </div>
+
   <h3>dsh（DeepSeek Harness 命令行版）</h3>
   <div class="settings-grid">
     <div>

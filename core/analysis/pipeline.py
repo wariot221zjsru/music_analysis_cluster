@@ -33,7 +33,7 @@ from . import texture as texture_mod
 from . import tonality as tonality_mod
 from . import voice_branches
 from . import voice_id as voice_mod
-from .scoredata import parse_score, windows_of_measures
+from .scoredata import parse_score, windows_of_measures, build_measure_map
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +125,17 @@ def _stale_deps(data, config, outputs) -> set:
     8 个窗的旧值。单步重跑 melody_line 时 `ctx.outputs` 直接复用它，
     后半首曲子在矩阵里一个窗都查不到 —— 于是半首旋律凭空消失。
 
-    这里按"窗数是否还和当前谱面对得上"判断，过期的依赖跟着重跑，
-    用户点一次 ⟲ 就能自愈，不必记得"先去重跑声部识别"。
+    这里按两个角度判断，过期的依赖跟着重跑，用户点一次 ⟲ 就能自愈，
+    不必记得"先去重跑声部识别"：
+      ① **窗数 / 窗长**是否还和当前谱面对得上（上面那次事故的直接原因）；
+      ② 每个窗里"哪些声部在响"是否和当前谱面一致。这条是为了另一类事故：
+         解析规则改了（例如不再把颤音琴 / 钟琴当无音高打击乐），声部识别
+         是按旧口径算的，矩阵里根本没有那个声部 —— 窗数一个不少，
+         光看 ① 完全查不出来，主旋律线却只能报出伴奏声部；
+      ③ **织体密度口径**（按发音数 / 按事件数）是否还是设置里的那个；
+      ④ **力度开关**（这一条证据算不算进主旋律判定）是否还是设置里的那个。
+         ③④ 这类更隐蔽：谱面一模一样、窗数一模一样，只是设置变了开关，
+         矩阵本身没错，但窗归属是按另一套判据挑出来的 —— 不重算就用回旧结论。
     """
     stale = set()
     vo = outputs.get('voice_id')
@@ -136,9 +145,32 @@ def _stale_deps(data, config, outputs) -> set:
         if matrix and (
                 sal.get('window_bars') != config.analysis_window_bars
                 or len(matrix) != len(windows_of_measures(
-                    data, config.analysis_window_bars))):
+                    data, config.analysis_window_bars))
+                or not _matrix_matches_score(data, matrix)
+                # 老产物没有这两个字段 → 视为 True，正是当时算法的默认口径
+                or bool(sal.get('density_by_note_count', True))
+                != bool(getattr(config, 'density_by_note_count', True))
+                or bool(sal.get('melody_dynamics', True))
+                != bool(getattr(config, 'melody_dynamics', True))):
             stale.add('voice_id')
     return stale
+
+
+def _matrix_matches_score(data, matrix) -> bool:
+    """显著性矩阵里"每窗哪些声部在响"，是否和当前谱面逐窗一致。"""
+    measure_offsets, _, _bar_ql = build_measure_map(data)
+    for row in matrix:
+        sm, em = row.get('start_measure'), row.get('end_measure')
+        m_start = measure_offsets.get(sm)
+        m_end = measure_offsets.get(int(em) + 1) if em is not None else None
+        if m_start is None or m_end is None:
+            return False
+        got = {int(k) for k in (row.get('scores') or {})}
+        want = {p.index for p in data.parts
+                if any(m_start <= e.offset < m_end for e in p.pitched_events)}
+        if got != want:
+            return False
+    return True
 
 
 def _set_result(piece, step, status, output=None, error=None,
