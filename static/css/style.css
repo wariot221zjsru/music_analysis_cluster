@@ -346,6 +346,16 @@ body {
   border-bottom: 1px solid var(--border);
 }
 .sts-hint { max-width: 560px; }
+/* 「分析曲式」开关：紧贴运行按钮，不另起一行 */
+.sts-switch {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text); cursor: pointer;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: #fff; white-space: nowrap;
+}
+.sts-switch input { margin: 0; cursor: pointer; }
+.sts-switch.off { color: var(--muted); }
+.sts-switch-note { font-size: 12px; color: var(--muted); }
 .sts-body { margin-top: 14px; width: 100%; }
 .sts-body .table { width: 100%; }
 .ev-list { margin: 8px 0 8px 20px; font-size: 13px; line-height: 1.8; }

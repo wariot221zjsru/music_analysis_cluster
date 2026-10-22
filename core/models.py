@@ -287,6 +287,14 @@ class SystemConfig(models.Model):
                   '结果与开启 DeepSeek 之前的版本一致。'
                   '模型不可用（未安装 dsh、超时、返回不可解析）时自动'
                   '退回本地最优，不会让整步分析失败。')
+    # —— 音乐结构：是否分析曲式（在「音乐结构」窗口上直接切，不必进设置页）——
+    structure_form_enabled = models.BooleanField(
+        '分析曲式', default=True,
+        help_text='开（默认）：乐句 → 主题 → 曲式三层全跑，并让大模型命名曲式、'
+                  '叙述段落功能。关：只做乐句切分与主题识别（哪些乐句是同一材料、'
+                  '各在哪出现），不做曲式推断、也不调大模型 —— 曲式是最容易在材料'
+                  '不足时给出"似是而非的名字"的一层，只想看材料关系时把它关掉更快也更稳。'
+                  '改动后请重跑音乐结构。')
     # —— 分析窗口 ——
     analysis_window_bars = models.IntegerField(
         '显著性时间窗（小节）', default=4,

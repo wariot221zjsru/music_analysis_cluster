@@ -39,6 +39,15 @@
     </div>
     {% if can_edit %}
     <div class="sts-actions">
+      {% if item.key == 'structure' %}
+      {# 「分析曲式」开关：关掉只做乐句切分与主题识别，不推断曲式、不调大模型 #}
+      <label class="sts-switch{% if not form_enabled %} off{% endif %}"
+             data-switch="structure"
+             title="开启：乐句 → 主题 → 曲式三层全跑，并让大模型命名曲式、叙述段落功能。关闭：只做乐句切分与主题识别（哪些乐句是同一材料、各在哪出现），不推断曲式，也不调用大模型。">
+        <input type="checkbox" data-form-toggle {% if form_enabled %}checked{% endif %}>
+        <span>分析曲式</span>
+      </label>
+      {% endif %}
       {% if convert_done %}
       <button class="btn btn-primary" data-run="{{ item.key }}">
         ▶ <span data-run-label="{{ item.key }}">运行</span>

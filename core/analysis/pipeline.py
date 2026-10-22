@@ -139,22 +139,45 @@ def _stale_deps(data, config, outputs) -> set:
       ⑤ **双音口径**（保留双音 / 压成单音）：不改窗归属，只改导出的音，但
          每段里记着的 ``keep_doubles`` 是上次运行的值，照着它导出等于没改。
       ⑥ **DeepSeek 兜底开关**：改的不是算法而是"难判的窗要不要请示模型"，
-         开关一动，难判的那些窗会是另一种归属。
+         开关一动，难判的那些窗会是另一种归属；
+      ⑦ **曲式开关**：structure 关掉时那一层本来就没有结论，开着时又该补上，
+         两个方向都算过期；另外主题指纹"有没有用主旋律线"也在这里比 ——
+         老结果是用全体最高音算的，等 melody_line 跑出来之后就该重算。
     """
     stale = set()
     ml = outputs.get('melody_line')
     # 双音口径改了 → melody_line 重跑。它不改窗归属，改的是导出的音，
     # 而每段记着的 keep_doubles 是上次运行的值，照着它导出等于没改。
-    if isinstance(ml, dict) and ml.get('status') == 'done':
-        prev = (ml.get('output') or {}).get('double') or {}
+    #
+    # 注意 ``ctx.outputs`` 里存的是**输出本体**，不是
+    # ``{'status': .., 'output': ..}`` 那种记录。历史上这里判过
+    # ``ml.get('status') == 'done'`` —— 那个键在输出里根本不存在，
+    # 于是下面两段检测从来没生效过（改了口径也不重跑）。现在按特征键判。
+    if isinstance(ml, dict) and ('double' in ml or 'llm_judge' in ml):
+        prev = ml.get('double') or {}
         if ('keep' in prev and bool(prev.get('keep'))
                 != bool(getattr(config, 'melody_keep_doubles', True))):
             stale.add('melody_line')
         # DeepSeek 兜底裁定：开关变了，难判的那些窗要按另一套口径重算
-        lj = (ml.get('output') or {}).get('llm_judge') or {}
+        lj = ml.get('llm_judge') or {}
         if ('enabled' in lj and bool(lj.get('enabled'))
                 != bool(getattr(config, 'melody_llm_judge', True))):
             stale.add('melody_line')
+
+    # 音乐结构：曲式开关动了 → structure 重跑。关掉时那一层本来就不该有结论，
+    # 开着时又该补上，两种方向都算过期。
+    st = outputs.get('structure')
+    if isinstance(st, dict) and isinstance(st.get('form'), dict) \
+            and 'enabled' in st['form']:
+        if bool(st['form']['enabled']) != bool(
+                getattr(config, 'structure_form_enabled', True)):
+            stale.add('structure')
+        # 主题指纹的取样口径：当时没有主旋律线（退回全体最高音），现在有了
+        # → 主题会被伴奏顶音污染，必须重算。段数变了同理。
+        prev_sig = (st.get('theme_params') or {}).get('melody_sig')
+        cur_sig = len((outputs.get('melody_line') or {}).get('segments') or []) or None
+        if prev_sig != cur_sig:
+            stale.add('structure')
     vo = outputs.get('voice_id')
     if isinstance(vo, dict):
         sal = vo.get('salience') or {}
@@ -256,9 +279,11 @@ def _run_one_step(ctx: _Ctx, step: str):
             data, cfg, ctx.outputs['voice_id'], ctx.outputs['polyphony'],
             ctx.outputs['exchange'])
     if step == 'structure':
-        return structure_mod.structure(data, cfg, ctx.outputs['rhythm_grid'],
-                                       ctx.outputs['chords'],
-                                       ctx.outputs['tonality'])
+        # melody_line 是**可选**依赖（不进 STEP_DEPS，不强制补跑）：
+        # 有它就用主旋律声部做主题指纹，没有就退回"全体最高音"的老口径。
+        return structure_mod.structure(
+            data, cfg, ctx.outputs['rhythm_grid'], ctx.outputs['chords'],
+            ctx.outputs['tonality'], melody_out=ctx.outputs.get('melody_line'))
     if step == 'texture':
         return texture_mod.texture(data, cfg, ctx.outputs['instrumentation'],
                                    ctx.outputs['voice_id'],

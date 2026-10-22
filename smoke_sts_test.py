@@ -27,7 +27,7 @@ from django.test import Client  # noqa: E402
 
 from core.analysis import llm as llm_mod  # noqa: E402
 from core.analysis import pipeline, qa as qa_mod  # noqa: E402
-from core.models import AnalysisResult, Piece, QAQuestion  # noqa: E402
+from core.models import AnalysisResult, Piece, QAQuestion, SystemConfig  # noqa: E402
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_smoke_db.sqlite3')
 MIDI_OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_smoke_sts.mid')
@@ -202,6 +202,27 @@ def main():
             check('sts 页含问答链接', '/ask/' in body)
         if url.endswith('/ask/'):
             check('qa 页含结构页链接', '/sts/' in body)
+
+    # 「音乐结构」窗口上的「分析曲式」开关：关 → 存盘 + 标需重跑；再开回来
+    print('\n[曲式开关] HTTP 往返：')
+    resp = c.get(f'/pieces/{piece.id}/status/')
+    jd = resp.json() if resp.status_code == 200 else {}
+    check('状态接口带曲式开关', 'structure_form_enabled' in (jd.get('config') or {}),
+          str(jd.get('config')))
+    resp = c.post(f'/pieces/{piece.id}/structure-form/', {'enabled': '0'})
+    jd = resp.json() if resp.status_code == 200 else {}
+    check('关闭曲式 200', jd.get('ok') is True, str(jd))
+    check('关闭后写进系统配置',
+          SystemConfig.get_config().structure_form_enabled is False)
+    check('关闭后已有结果标「需重跑」', jd.get('stale') is True, str(jd))
+    resp = c.post(f'/pieces/{piece.id}/structure-form/', {'enabled': '1'})
+    jd = resp.json() if resp.status_code == 200 else {}
+    check('再开回来 200 且配置为 True',
+          jd.get('ok') is True
+          and SystemConfig.get_config().structure_form_enabled is True, str(jd))
+    check('开关不改动已有结构结果本身',
+          bool((AnalysisResult.objects.get(piece=piece, step='structure').output or {})
+               .get('phrases')))
 
     print('\n[问答] 提交与回答：')
     resp = c.post(f'/pieces/{piece.id}/ask/submit/', {'question': '这首曲子的织体如何？'})

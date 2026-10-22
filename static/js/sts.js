@@ -66,22 +66,93 @@
   var RENDERERS = {
     structure: function (o) {
       var f = o.form || {};
+      var tp = o.theme_params || {};
+      var html = '';
+
+      /* 曲式块：窗口上的开关关掉时，这一层本来就没有结论 */
+      if (f.enabled === false) {
+        html += '<div class="kv"><b>曲式：</b><span class="muted">未分析'
+          + '（窗口上的「分析曲式」开关关闭）</span></div>';
+      } else {
+        html += '<div class="kv"><b>曲式：</b><span class="highlight">' + esc(f.name)
+          + '</span>（主题骨架 ' + esc(f.scheme) + '，置信度 ' + esc(f.confidence) + '）'
+          + (f.close ? ' <span class="tag">两解接近</span>' : '') + '</div>';
+      }
+
+      html += '<div class="kv"><b>乐句：</b>' + esc(o.phrase_count)
+        + ' 句　<b>主题：</b>' + esc((o.themes || []).length)
+        + ' 个　<b>乐段：</b>' + esc((o.sections || []).length)
+        + ' 个　<b>小节：</b>' + esc(o.measure_count)
+        + (tp.melody_voice
+          ? '　<span class="tag tag-principal">主题指纹取自旋律线</span>'
+          : '　<span class="tag">指纹取自全体最高音</span>')
+        + '</div>';
+
+      /* 主题清单：身份层最该给出、而旧版完全没给的东西 */
+      var ths = (o.themes || []).map(function (t) {
+        var vs = (t.variants || []).map(function (x) {
+          return '第' + x.phrase + '句 ' + x.kind + ' ' + x.sim
+            + (x.fragment ? '（碎片）' : '');
+        }).join('；');
+        return '<div class="principal-line"><b>主题 ' + esc(t.id) + '</b>：'
+          + esc(t.count) + ' 次（第 ' + esc((t.occurrences || []).join('、')) + ' 句），'
+          + '共 ' + esc(t.bars) + ' 小节'
+          + (vs ? '<div class="muted small">变形：' + esc(vs) + '</div>' : '')
+          + '</div>';
+      }).join('');
+      if (ths) {
+        html += '<div class="kv"><b>主题清单</b></div>' + ths;
+      }
+
+      /* 曲式候选打分：会输出"每个模板为什么得分高"，不是黑箱 */
+      var cands = (f.candidates || []).slice(0, 3).map(function (c) {
+        var p = c.parts || {};
+        var hit = c.name === f.name;
+        return '<div class="principal-line">' + (hit ? '<b>' : '') + esc(c.name)
+          + (hit ? '</b>' : '') + '：总分 ' + esc(c.score)
+          + ' <span class="muted">材料 ' + esc(p.material) + ' / 调性 ' + esc(p.key)
+          + ' / 终止式 ' + esc(p.cadence) + ' / 均衡 ' + esc(p.balance) + '</span></div>';
+      }).join('');
+      if (cands) {
+        html += '<details class="melody-detail"><summary>曲式候选打分（前 3）'
+          + '</summary>' + cands + '</details>';
+      }
+
       var secs = (o.sections || []).map(function (s) {
-        return [s.label, s.start_measure + '-' + s.end_measure, s.bars,
+        return [s.label, s.theme, s.start_measure + '-' + s.end_measure, s.bars,
           s.cadence || '—', s.key || '—'];
       });
       var phs = (o.phrases || []).map(function (p) {
-        return [p.index, p.start_measure + '-' + p.end_measure, p.bars,
+        return [p.index, p.theme, p.start_measure + '-' + p.end_measure, p.bars,
           p.note_count, p.pitch_range, p.cadence || '—'];
       });
-      return '<div class="kv"><b>曲式：</b><span class="highlight">' + esc(f.name)
-        + '</span>（骨架 ' + esc(f.scheme) + '，置信度 ' + esc(f.confidence) + '）</div>'
-        + '<div class="kv"><b>本地骨架推断：</b>' + esc(f.local_guess)
-        + '　<b>乐句数：</b>' + esc(o.phrase_count)
-        + '　<b>小节数：</b>' + esc(o.measure_count) + '</div>'
-        + tableFrom(secs, ['乐段', '小节', '长度', '终止式', '调性'])
-        + tableFrom(phs, ['#', '小节', '长度', '音符数', '音域', '终止式'])
-        + renderLLM(o.llm_analysis, 'AI 结构叙述');
+      html += tableFrom(secs, ['乐段', '主题', '小节', '长度', '终止式', '调性']);
+      html += tableFrom(phs, ['#', '主题', '小节', '长度', '音符数', '音域', '终止式']);
+
+      /* 反馈改判：只做一轮，每一次改判都带理由 */
+      var fb = f.feedback || {};
+      if (fb.applied && (fb.promoted || []).length) {
+        html += '<details class="melody-detail"><summary>反馈改判：'
+          + fb.promoted.length + ' 段按「材料 + 调性」合取提升为同一主题</summary>'
+          + '<div class="kv small">' + esc(fb.reason) + '</div>'
+          + fb.promoted.map(function (p) {
+            return '<div class="principal-line">第 ' + esc(p.phrase) + ' 句 → 主题 '
+              + esc(p.theme) + '（相似度 ' + esc(p.sim) + '，' + esc(p.kind) + '）'
+              + '<div class="muted small">' + esc(p.reason) + '</div></div>';
+          }).join('') + '</details>';
+      }
+
+      /* 乐句边界候选：切分本身有歧义，把没被选中的落点也摆出来 */
+      var bc = (o.phrase_boundaries || []).map(function (b) {
+        return [b.measure, (b.reasons || []).join('；')];
+      });
+      if (bc.length) {
+        html += '<details class="melody-detail"><summary>乐句边界候选（' + bc.length
+          + ' 处，切法不止一种）</summary>'
+          + tableFrom(bc, ['小节', '为什么可以断在这里']) + '</details>';
+      }
+
+      return html + renderLLM(o.llm_analysis, 'AI 结构叙述');
     },
     texture: function (o) {
       var d = o.density || {};
@@ -323,6 +394,54 @@
     polling = setInterval(poll, 2500);
   }
 
+  /* ---------- 「分析曲式」开关（只在音乐结构窗口上）----------
+     关掉之后只做乐句切分与主题识别，不推断曲式、也不调大模型。
+     状态存在服务端（单一来源），所以刷新页面 / 换设备都一致。 */
+  var formToggle = document.querySelector('[data-form-toggle]');
+  var switchBox = formToggle ? formToggle.closest('.sts-switch') : null;
+
+  function paintSwitch(on) {
+    if (!formToggle) return;
+    formToggle.checked = !!on;
+    if (switchBox) switchBox.classList.toggle('off', !on);
+  }
+
+  async function saveFormEnabled(on) {
+    if (!formToggle) return;
+    formToggle.disabled = true;
+    try {
+      var data = await post('/pieces/' + PIECE_ID + '/structure-form/',
+        new URLSearchParams({ enabled: on ? '1' : '0' }).toString());
+      if (!data.ok) {
+        alert(data.error || '保存失败');
+        paintSwitch(!on);
+        return;
+      }
+      paintSwitch(data.enabled);
+      if (data.stale) {
+        var pill = document.querySelector('[data-pill="structure"]');
+        if (pill) {
+          pill.textContent = '需重跑才生效';
+          pill.className = 'pill pill-pending';
+        }
+      }
+    } catch (e) {
+      paintSwitch(!on);
+    } finally {
+      formToggle.disabled = false;
+    }
+  }
+
+  if (formToggle) {
+    if (!CAN_EDIT) {
+      formToggle.disabled = true;
+    } else {
+      formToggle.addEventListener('change', function () {
+        saveFormEnabled(formToggle.checked);
+      });
+    }
+  }
+
   /* 无操作权限时隐藏重跑按钮 */
   if (!CAN_EDIT) {
     document.querySelectorAll('[data-rerun]').forEach(function (b) {
@@ -348,6 +467,9 @@
       var results = d.results || {};
       RUN_COUNTS = d.run_counts || {};
       STEPS.forEach(function (s) { renderCard(s, results[s]); updateHistBtn(s); });
+      if (d.config && typeof d.config.structure_form_enabled === 'boolean') {
+        paintSwitch(d.config.structure_form_enabled);
+      }
       if (d.any_running) startPolling();
     })
     .catch(function () { /* 忽略 */ });

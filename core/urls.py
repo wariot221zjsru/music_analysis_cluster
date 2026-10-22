@@ -9,6 +9,9 @@ urlpatterns = [
     path('pieces/<int:piece_id>/', views.piece_detail, name='piece_detail'),
     path('pieces/<int:piece_id>/run/', views.run_group, name='run_group'),
     path('pieces/<int:piece_id>/rerun/', views.rerun_step, name='rerun_step'),
+    # —— 「音乐结构」窗口上的「分析曲式」开关 ——
+    path('pieces/<int:piece_id>/structure-form/', views.structure_form_toggle,
+         name='structure_form_toggle'),
     # —— 主旋律重新导出（改节奏 / 音色，不重跑分析）——
     path('pieces/<int:piece_id>/reexport/', views.reexport_melody,
          name='reexport_melody'),

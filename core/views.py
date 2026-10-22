@@ -143,7 +143,8 @@ def piece_detail(request, piece_id: int):
 # 结构 / 织体 / 风格三个步骤（页面按此顺序竖排，各自单独点击运行）
 STS_STEPS = [
     {'key': 'structure', 'title': '① 音乐结构分析',
-     'hint': '乐句切分 → 乐段聚类 → 曲式判断（依赖：节奏网格 + 和弦 + 调性）'},
+     'hint': '乐句切分 → 主题识别 → 曲式判断（依赖：节奏网格 + 和弦 + 调性；'
+             '有主旋律线时会只取主旋律做主题指纹）'},
     {'key': 'texture', 'title': '② 织体分析',
      'hint': '逐窗判定单声 / 主调 / 复调 / 支声（依赖：配器 + 声部 + 复调 + 节奏网格）'},
     {'key': 'style', 'title': '③ 风格分析',
@@ -165,6 +166,8 @@ def sts_page(request, piece_id: int):
         'piece': piece,
         'can_edit': _can_edit(request.user, piece),
         'sts_steps': STS_STEPS,
+        # 「音乐结构」窗口上的「分析曲式」开关（状态存 SystemConfig，单一来源）
+        'form_enabled': bool(SystemConfig.get_config().structure_form_enabled),
         'convert_done': bool(convert_result and convert_result.status == 'done'),
     })
 
@@ -410,6 +413,38 @@ def toggle_visibility(request, piece_id: int):
     messages.success(request, '作品已设为「公开」，其他登录用户可见。'
                      if piece.is_public else '作品已设为「私有」，仅本人可见。')
     return redirect('core:piece_detail', piece_id=piece.id)
+
+
+@login_required
+@require_POST
+def structure_form_toggle(request, piece_id: int):
+    """「音乐结构」窗口上的「分析曲式」开关。
+
+    只有一个状态源（``SystemConfig.structure_form_enabled``）：关掉之后
+    structure 只做乐句切分与主题识别，不推断曲式、也不调大模型。
+    已经跑过的结果若与新口径不符，返回 ``stale=True``，由页面提示"需重跑"。
+    """
+    piece = get_object_or_404(Piece, pk=piece_id)
+    if not _can_edit(request.user, piece):
+        return JsonResponse({'ok': False, 'error': '无权操作该作品。'}, status=403)
+    if piece.results.filter(status__in=['running', 'pending']).exists():
+        return JsonResponse({'ok': False,
+                             'error': '有任务在运行中，等它结束再切换。'}, status=409)
+
+    on = request.POST.get('enabled') in ('1', 'true', 'on', 'True')
+    config = SystemConfig.get_config()
+    config.structure_form_enabled = on
+    config.save()
+
+    result = piece.results.filter(step='structure').first()
+    done = bool(result and result.status == 'done' and result.output)
+    stale = bool(done and bool((result.output.get('form') or {}).get('enabled')) != on)
+    return JsonResponse({
+        'ok': True, 'enabled': on, 'stale': stale,
+        'message': ('已开启曲式分析，下次运行音乐结构时生效。'
+                    if on else
+                    '已关闭曲式分析：只做乐句切分与主题识别，不推断曲式。'),
+    })
 
 
 @login_required
@@ -672,6 +707,11 @@ def piece_status(request, piece_id: int):
         'ok': True,
         'results': results,
         'run_counts': run_counts,
+        # 结构窗口上的「分析曲式」开关：前端据此回填勾选状态
+        'config': {
+            'structure_form_enabled': bool(
+                SystemConfig.get_config().structure_form_enabled),
+        },
         'any_running': any(v['status'] in ('running', 'pending')
                            for v in results.values()),
     })
@@ -722,6 +762,12 @@ def system_settings(request):
             # 判定困难时是否交给 DeepSeek 兜底：勾上 = 启用（默认）
             config.melody_llm_judge = bool(
                 request.POST.get('melody_llm_judge'))
+            # 曲式开关的主入口在「音乐结构」窗口上（structure_form_toggle），
+            # 这里只在**显式提交**时才改 —— 复选框不提交 = 关闭，漏传这个键
+            # 会把用户开着的曲式分析静默关掉（这个坑在别的开关上踩过）。
+            if 'structure_form_enabled' in request.POST:
+                config.structure_form_enabled = bool(
+                    request.POST.get('structure_form_enabled'))
             config.chord_window = request.POST['chord_window']
             config.dsh_profile = request.POST['dsh_profile'].strip() or 'headless'
             config.dsh_timeout = int(request.POST['dsh_timeout'])

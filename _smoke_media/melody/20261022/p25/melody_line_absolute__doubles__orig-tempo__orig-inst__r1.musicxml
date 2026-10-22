@@ -5,7 +5,7 @@
   <identification>
     <creator type="composer">Music21</creator>
     <encoding>
-      <encoding-date>2026-10-21</encoding-date>
+      <encoding-date>2026-10-22</encoding-date>
       <software>music21 v.10.5.0</software>
       <supports element="beam" type="yes" />
       <supports element="stem" type="yes" />
@@ -19,21 +19,21 @@
     </scaling>
   </defaults>
   <part-list>
-    <score-part id="P1b2e5a08a1b9195cb44fead2225c4812">
+    <score-part id="P3a3c69525bf6f8f9831c058cc5c95979">
       <part-name>Violin</part-name>
       <part-abbreviation>Vln</part-abbreviation>
-      <score-instrument id="I54004420f785def30223e243422dd9a4">
+      <score-instrument id="I1f96141845e38b31a09a499682f815ab">
         <instrument-name>Violin</instrument-name>
         <instrument-abbreviation>Vln</instrument-abbreviation>
       </score-instrument>
-      <midi-instrument id="I54004420f785def30223e243422dd9a4">
+      <midi-instrument id="I1f96141845e38b31a09a499682f815ab">
         <midi-channel>1</midi-channel>
         <midi-program>41</midi-program>
       </midi-instrument>
     </score-part>
   </part-list>
   <!--=========================== Part 1 ===========================-->
-  <part id="P1b2e5a08a1b9195cb44fead2225c4812">
+  <part id="P3a3c69525bf6f8f9831c058cc5c95979">
     <!--========================= Measure 1 ==========================-->
     <measure implicit="no" number="1">
       <attributes>
