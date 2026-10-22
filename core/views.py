@@ -486,9 +486,15 @@ def reexport_melody(request, piece_id: int):
     # 历史归档里那一行的下载链接也一直指向它自己的文件。
     run_tag = mex.export_run_tag(result.output, piece, step)
     shape_tag = ''
+    # 双音口径沿用这一次运行自己的值（存盘 / 单音两份产物各存各的），
+    # 不按当前设置现取 —— 否则把开关一切，上次那份"单音"文件就被同名覆盖了。
+    double_tag = ''
     if step == 'melody_line':
         shape_tag = mex.shape_stem_tag((result.output or {}).get('shape_gate'),
                                        (result.output or {}).get('shape_gate_threshold'))
+        dbl = (result.output or {}).get('double') or {}
+        if 'keep' in dbl:
+            double_tag = mex.double_stem_tag(bool(dbl.get('keep')))
 
     try:
         if step == 'melody_line':
@@ -499,7 +505,7 @@ def reexport_melody(request, piece_id: int):
                     status=400)
             exports = melody_line_mod.export_segments(
                 data, piece, segments, options,
-                shape_tag=shape_tag, run_tag=run_tag)
+                shape_tag=shape_tag, run_tag=run_tag, double_tag=double_tag)
         else:
             exports = melody_mod.export_again(data, piece, result.output, options,
                                               run_tag)
@@ -564,14 +570,22 @@ def melody_export_download(request, piece_id: int):
         raise Http404(f'谱面读取失败：{exc}')
 
     out = result.output or {}
-    # 形态资格层开没开写进下载文件名：开了的那份与没开的那份一眼能分清
+    # 形态资格层开没开写进下载文件名：开了的那份与没开的那份一眼能分清；
+    # 双音口径同理（"保留双音"产物是和弦，"单音主音"产物是单音线）
     shape_tag = ''
+    double_tag_cn = ''
     if step == 'melody_line' and out.get('shape_gate'):
         shape_tag = mex.shape_label(True, out.get('shape_gate_threshold'))
+    if step == 'melody_line':
+        dbl = out.get('double') or {}
+        if 'keep' in dbl:
+            double_tag_cn = mex.double_label(bool(dbl.get('keep')))
     if step == 'melody_line':
         segments = out.get('segments') or []
         if not segments:
             raise Http404('该步骤没有分段结果，请先运行一次。')
+        # 保留双音与否按这次结果自己记录的口径（segments 里带着主音表），
+        # 不用现拿一份 segments 的浅拷贝去改，避免污染库里的 output。
         built = melody_line_mod.build_export_parts(data, segments, options)
         variant = request.GET.get('variant') or 'absolute'
         pick = next((b for b in built if b['key'] == variant), built[0])
@@ -599,7 +613,8 @@ def melody_export_download(request, piece_id: int):
         raise Http404(f'导出失败：{exc}')
 
     ext = '.mid' if fmt == 'midi' else '.musicxml'
-    filename = mex.download_filename(piece.title, label, options, ext, shape_tag)
+    filename = mex.download_filename(piece.title, label, options, ext,
+                                     shape_tag, double_tag_cn)
     ctype = ('audio/midi' if fmt == 'midi'
              else 'application/vnd.recordare.musicxml+xml')
     resp = FileResponse(io.BytesIO(payload), as_attachment=True,
@@ -700,6 +715,13 @@ def system_settings(request):
                 request.POST.get('density_by_note_count'))
             # 力度是否参与"听感"判定：勾上 = 算（默认），不勾 = 完全不读力度
             config.melody_dynamics = bool(request.POST.get('melody_dynamics'))
+            # 双音口径：勾上 = 一个事件几个音就导出几个音（默认），
+            # 不勾 = 每个多音事件按主音判定只留一个音
+            config.melody_keep_doubles = bool(
+                request.POST.get('melody_keep_doubles'))
+            # 判定困难时是否交给 DeepSeek 兜底：勾上 = 启用（默认）
+            config.melody_llm_judge = bool(
+                request.POST.get('melody_llm_judge'))
             config.chord_window = request.POST['chord_window']
             config.dsh_profile = request.POST['dsh_profile'].strip() or 'headless'
             config.dsh_timeout = int(request.POST['dsh_timeout'])

@@ -181,6 +181,8 @@ def _post_settings(user, extra=None):
         'melody_export_instrument_mode': 'original', 'melody_export_program': '0',
         'analysis_window_bars': '4', 'chord_window': 'measure',
         'melody_dynamics': 'on',            # 力度参与"听感"判定（默认口径）
+        'melody_keep_doubles': 'on',       # 主旋律线保留双音（默认口径）
+        'melody_llm_judge': '',            # 关：回归要可复现，不许联网
         'dsh_profile': 'headless', 'dsh_timeout': '600',
         'max_chord_windows_per_call': '24',
     }
@@ -193,6 +195,10 @@ def _post_settings(user, extra=None):
 
 def main():
     prepare()
+    # 回归可复现：本机装着 dsh，兜底开关默认开着会让管道真去调模型
+    _cfg = SystemConfig.get_config()
+    _cfg.melody_llm_judge = False
+    _cfg.save()
     user = User.objects.get(username='smoke')
     pieces = []
 

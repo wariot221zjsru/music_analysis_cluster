@@ -499,6 +499,65 @@ function tableFrom(rows, headers) {
   return `<table class="table small-table"><thead>${h}</thead><tbody>${b}</tbody></table>`;
 }
 
+/* ---------- DeepSeek 兜底裁定（选轨层） ----------
+   开了「判定困难时交给 DeepSeek」之后，本地判据咬得太紧的那几窗会去问模型。
+   问过的窗在这里左右对照：左边是本地摊开的候选声部与四个分数，右边是模型的
+   选择与理由 —— 没问过的窗不占地方。 */
+function judgeLine(o) {
+  const j = o && o.llm_judge;
+  if (!j) return '';
+  if (!j.enabled) {
+    return `<div class="kv muted small"><b>DeepSeek 兜底：</b>已关闭 —— `
+      + `本次完全由本地判据定夺（可在系统设置里开启）。</div>`;
+  }
+  if (!j.asked) {
+    return `<div class="kv muted small"><b>DeepSeek 兜底：</b>已开启，`
+      + `本次没有需要请示的难判窗（第一名领先都超过 ${j.margin}）。</div>`;
+  }
+  return `<div class="kv muted small"><b>DeepSeek 兜底：</b>`
+    + `${j.asked} 个难判窗，真的问了 ${j.called} 个，采纳 ${j.applied} 个`
+    + `（单次上限 ${j.budget} 个）—— 详情见下面「DeepSeek 兜底裁定」。</div>`;
+}
+
+function judgeBlock(o) {
+  const j = o && o.llm_judge;
+  if (!j || !j.windows) return '';
+  const cases = j.windows.filter(w => w.called);
+  if (!cases.length) return '';
+  let left = '', right = '';
+  for (const c of cases) {
+    const cands = (c.candidates || []).map((k, i) =>
+      `<div class="principal-line">${i + 1}. <b>${escapeHtml(k.part_name)}</b>`
+      + ` <span class="muted">显著性 ${k.salience}`
+      + (k.mean_pitch !== null && k.mean_pitch !== undefined
+          ? `　平均音高 ${k.mean_pitch}` : '')
+      + (k.note_count !== null && k.note_count !== undefined
+          ? `　发音数 ${k.note_count}` : '')
+      + (k.is_voice ? '　人声' : '') + (k.low_register ? '　低音区' : '')
+      + (k.part_index === c.local_part_index ? '　← 本地领先' : '')
+      + `</span></div>`).join('');
+    left += `<div class="kv small"><b>第 ${c.window} 窗 · 第 ${c.start_measure}–`
+      + `${c.end_measure} 小节</b> <span class="muted">`
+      + `本地领先仅 ${c.local_margin}</span></div>` + cands;
+    const changed = c.applied && c.part_index !== c.local_part_index;
+    right += `<div class="kv small"><b>第 ${c.window} 窗 · `
+      + `${changed ? '改判' : '维持本地'}</b></div>`
+      + `<div class="principal-line">本地：<b>${escapeHtml(c.local_part_name)}</b>`
+      + ` → 判定：<b>${escapeHtml(c.part_name)}</b></div>`
+      + (c.reason
+          ? `<div class="principal-line muted">${escapeHtml(c.reason)}</div>` : '')
+      + (c.confidence !== null && c.confidence !== undefined
+          ? `<div class="muted small">模型自报置信度 ${c.confidence}</div>` : '');
+  }
+  return `<details class="melody-detail" open>
+      <summary>DeepSeek 兜底裁定（${cases.length} 个难判窗）</summary>
+      <div class="principal-judge">
+        <div class="principal-col"><h4>本地证据 · 候选声部摊开</h4>${left}</div>
+        <div class="principal-col is-llm"><h4>DeepSeek 判定与理由</h4>${right}</div>
+      </div>
+    </details>`;
+}
+
 /* ---------- 主旋律导出设置（节奏 / 音色） ----------
    以前导出写死 120 BPM + 默认钢琴，听起来永远只有一种乐器。
    这里让用户自己选：原始节奏 or 统一 BPM（默认 120，可填 20–300）；
@@ -567,6 +626,26 @@ function runTagLine(o) {
   if (!n) return '';
   return `<div class="kv muted small"><b>本次产物：</b>第 ${n} 次运行`
     + `（导出文件名末尾带 r${n}，与以前每次运行的产物并存）</div>`;
+}
+
+/* MIDI 音高号 → 音名（G4 这种）；主音判定面板里要把数字写成音名才看得懂 */
+function pitchNameOrNum(m) {
+  const N = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  return `${N[((m % 12) + 12) % 12]}${Math.floor(m / 12) - 1}`;
+}
+
+/* 双音口径（只有主旋律线这一步有）：保留双音 / 压成单音，产物不是一回事 */
+function doubleLine(o) {
+  const d = o && o.double;
+  if (!d) return '';
+  const why = d.keep
+    ? '谱面一个发声事件有几个音，导出的主旋律线就保留几个音；'
+      + '平行三度 / 六度、加八度这类加厚旋律整条留住。'
+    : '每个同时响多个音的瞬间只留主音那一个音，其余按和声填料丢掉；'
+      + '主音由候选层轮廓 / 和弦成员度 / 相对低音位置漂移三条证据挑选。';
+  return `<div class="kv muted small"><b>双音口径：</b>`
+    + `${d.keep ? '保留双音' : '单音主音'}`
+    + ` <span class="tag tag-principal">${escapeHtml(d.tag || '')}</span> —— ${why}</div>`;
 }
 
 /* 「按当前设置下载」：现算一份带当前节奏 / 音色的 MIDI，直接下发，
@@ -919,7 +998,67 @@ const RENDERERS = {
         + replaced.map(n => `<li>${n.measures}：${escapeHtml(n.reason)}</li>`).join('')
         + `</ul></details>`
       : '';
-    let exports = '';
+    function principalBlock(o) {
+  const d = (o && o.double) || {};
+  if (d.keep !== false) return '';
+  const cases = d.cases || [];
+  if (!cases.length) return '';
+  // 只有真的问过 DeepSeek 的那几段才开右侧面板 —— 判得干脆的段不占地方
+  const unsure = cases.filter(c => c.llm && c.llm.called);
+  if (!unsure.length) {
+    return `<details class="melody-detail">
+      <summary>主音判定（${cases.length} 段，全部由本地证据定夺）</summary>
+      ${cases.map(c => `<div class="principal-line"><b>${c.segment} 小节 `
+        + `${escapeHtml(c.part_name)}：</b>第 ${c.chosen_rank} 层当选`
+        + `（领先 ${c.margin}），共 ${c.chord_event_count} 个多音事件`
+        + (c.small_sample ? ' <span class="tag tag-principal">少样本口径</span>' : '')
+        + `</div>`).join('')}
+      </details>`;
+  }
+  let left = '', right = '';
+  for (const c of unsure) {
+    const layers = (c.layers || []).map(l =>
+      `<div class="principal-line">第 <b>${l.rank}</b> 层：总分 ${l.total}`
+      + ` <span class="muted">轮廓 ${l.shape} / 外音率 ${l.nonmember}`
+      + ` / 低音位置漂移 ${l.bass_spread} / 顶层先验 ${l.top_prior}`
+      + (l.link === undefined ? '' : ` / 连接平滑度 ${l.link}`)
+      + `</span></div>`).join('');
+    const picks = (c.events || []).slice(0, 10).map(e =>
+      `<div class="principal-line">第 ${e.measure} 小节 off ${e.offset}：`
+      + `${e.pitches.map(p => pitchNameOrNum(p)).join('、')}`
+      + ` → <b>${pitchNameOrNum(e.principal)}</b>`
+      + (e.source === 'deepseek'
+          ? ' <span class="tag tag-principal">DeepSeek</span>'
+          : ' <span class="muted small">本地</span>')
+      + `</div>`).join('');
+    left += `<div class="kv small"><b>${c.segment} 小节 · ${escapeHtml(c.part_name)}</b>`
+      + ` <span class="muted">${c.chord_event_count} 个多音事件，`
+      + `本地最优只领先 ${c.margin}</span>`
+      + (c.small_sample
+          ? ` <span class="tag tag-principal">少样本口径</span>`
+            + `<div class="muted small">多音事件不足 ${3} 个：轮廓不可靠，`
+            + `改看与前后音的衔接（连接平滑度权重提到最高），不作"取最高音"处理。</div>`
+          : '')
+      + `</div>` + layers + picks;
+    const llm = c.llm || {};
+    right += `<div class="kv small"><b>${c.segment} 小节 · 本地证据咬得太紧</b></div>`
+      + (llm.summary ? `<small>${escapeHtml(llm.summary)}</small>` : '')
+      + (llm.decisions || []).map(dc =>
+          `<div class="principal-line">off ${dc.offset} → <b>${escapeHtml(dc.name)}</b>`
+          + `<br><span class="muted">${escapeHtml(dc.reason || '')}</span></div>`).join('')
+      + (llm.raw_error
+          ? `<div class="alert alert-warn">DeepSeek 判定失败，已退回本地最优层：`
+            + `${escapeHtml(llm.raw_error)}</div>`
+          : `<div class="muted small">这一段采纳了 ${llm.applied || 0} 个瞬间的`
+            + `判定（共问 ${llm.asked || 0} 个），未采纳 ${llm.rejected || 0} 个。</div>`);
+  }
+  return `<div class="principal-judge">
+      <div class="principal-col"><h4>本地证据 · 候选层加权</h4>${left}</div>
+      <div class="principal-col is-llm"><h4>DeepSeek 判定与理由</h4>${right}</div>
+    </div>`;
+}
+
+let exports = '';
     const ex = o.exports || {};
     if (ex.absolute && ex.absolute.midi) {
       exports = `<div class="kv"><b>导出：</b>
@@ -956,13 +1095,16 @@ const RENDERERS = {
       + `　<b>形态资格：</b>${o.shape_gate
           ? `开（下限 ${o.shape_gate_threshold}）` : '关'}</div>` +
       runTagLine(o) +
+      doubleLine(o) +
+      judgeLine(o) +
       (o.has_voice_parts
         ? `<div class="kv"><b>人声声部：</b>${(o.voice_parts || [])
             .map(p => escapeHtml(p.name)).join('、')}</div>`
         : '<div class="kv muted"><b>本作品无人声声部</b>，全程按显著性选轨。</div>') +
       lowRegLine(o) +
       (segs.length ? tableFrom(rows, ['小节', '长度', '归属声部', '音符数', '置信度'])
-        : '<p class="muted small">没有可追踪的段落。</p>') + shapeBlock +
+        : '<p class="muted small">没有可追踪的段落。</p>') + shapeBlock
+        + principalBlock(o) + judgeBlock(o) +
       (cov.ratio !== undefined
         ? `<div class="kv"><b>覆盖：</b>${cov.covered_bars}/${cov.total_bars} 小节`
           + `（${(cov.ratio * 100).toFixed(1)}%）`

@@ -277,6 +277,39 @@ body {
   background: #fdeae9; color: #8c2f28; border-radius: 8px;
   padding: 10px; font-size: 12px; white-space: pre-wrap; max-height: 200px; overflow: auto;
 }
+/* ---------- 主音判定（双音压成单音时才有） ----------
+   双音口径改成「单音主音」后，某一段里候选层咬得太紧分不出高下时会把
+   这段交给 DeepSeek 判定。这时在主旋律线卡里**临时**多开一个与左栏等宽的
+   右侧面板，左边摆本地三条证据，右边摆模型的判断与理由 —— 两栏对照着看，
+   才知道它是凭什么选的这个音。 */
+.principal-judge {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  margin: 12px 0; align-items: start;
+}
+@media (max-width: 900px) {
+  .principal-judge { grid-template-columns: 1fr; }
+}
+.principal-col {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; background: var(--bg-soft, #fafafa);
+  min-height: 180px;
+}
+.principal-col > h4 {
+  margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--primary-dark);
+}
+.principal-col.is-llm { border-left: 3px solid var(--primary); }
+.principal-col small { display: block; margin: 4px 0; line-height: 1.6; }
+.principal-line {
+  font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--border);
+  line-height: 1.6;
+}
+.principal-line:last-child { border-bottom: none; }
+.principal-line b { color: var(--primary-dark); }
+.tag-principal {
+  background: #e8f0fe; color: #1c4fa1;
+  font-size: 11px; padding: 0 5px; border-radius: 4px;
+}
+
 .llm-box { margin-top: 10px; border-left: 3px solid var(--primary); padding-left: 12px; }
 .llm-box b { font-size: 13px; color: var(--primary-dark); display: block; margin-bottom: 4px; }
 .llm-desc { font-size: 13px; margin-top: 8px; line-height: 1.7; }

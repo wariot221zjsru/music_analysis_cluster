@@ -136,8 +136,25 @@ def _stale_deps(data, config, outputs) -> set:
       ④ **力度开关**（这一条证据算不算进主旋律判定）是否还是设置里的那个。
          ③④ 这类更隐蔽：谱面一模一样、窗数一模一样，只是设置变了开关，
          矩阵本身没错，但窗归属是按另一套判据挑出来的 —— 不重算就用回旧结论。
+      ⑤ **双音口径**（保留双音 / 压成单音）：不改窗归属，只改导出的音，但
+         每段里记着的 ``keep_doubles`` 是上次运行的值，照着它导出等于没改。
+      ⑥ **DeepSeek 兜底开关**：改的不是算法而是"难判的窗要不要请示模型"，
+         开关一动，难判的那些窗会是另一种归属。
     """
     stale = set()
+    ml = outputs.get('melody_line')
+    # 双音口径改了 → melody_line 重跑。它不改窗归属，改的是导出的音，
+    # 而每段记着的 keep_doubles 是上次运行的值，照着它导出等于没改。
+    if isinstance(ml, dict) and ml.get('status') == 'done':
+        prev = (ml.get('output') or {}).get('double') or {}
+        if ('keep' in prev and bool(prev.get('keep'))
+                != bool(getattr(config, 'melody_keep_doubles', True))):
+            stale.add('melody_line')
+        # DeepSeek 兜底裁定：开关变了，难判的那些窗要按另一套口径重算
+        lj = (ml.get('output') or {}).get('llm_judge') or {}
+        if ('enabled' in lj and bool(lj.get('enabled'))
+                != bool(getattr(config, 'melody_llm_judge', True))):
+            stale.add('melody_line')
     vo = outputs.get('voice_id')
     if isinstance(vo, dict):
         sal = vo.get('salience') or {}

@@ -149,6 +149,10 @@ def seg_of(out):
 
 def main():
     prepare()
+    # 回归可复现：本机装着 dsh，兜底开关默认开着会让管道真去调模型
+    _cfg = SystemConfig.get_config()
+    _cfg.melody_llm_judge = False
+    _cfg.save()
     user = User.objects.get(username='smoke')
     pieces = []
 

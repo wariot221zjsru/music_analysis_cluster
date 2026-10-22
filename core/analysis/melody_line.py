@@ -38,6 +38,8 @@
    - spliced：首尾相接的连续单声部（方便当一条旋律线听 / 导入 DAW）。
 """
 from . import melody_export as mex
+from . import melody_judge as judge_mod
+from . import principal as principal_mod
 from .melody import save_stream
 from .scoredata import (
     ScoreData, build_measure_map, windows_of_measures, interval_seq,
@@ -49,6 +51,22 @@ from .scoredata import (
 #   ① 小节号查不到偏移时按相邻小节推算，不再退回 0.0（旧实现会把段起点当成
 #      全曲开头，导出整段错位）；
 #   ② 导出写入 tempo 与 instrument，不再是恒 120 BPM + 默认钢琴。
+
+
+def part_label(data: ScoreData, idx) -> str:
+    """声部索引 → 名字（越界也不炸，给个占位）。"""
+    try:
+        i = int(idx)
+        if 0 <= i < len(data.part_names):
+            return data.part_names[i]
+    except (TypeError, ValueError):
+        pass
+    return f'Part {idx}'
+
+
+def _window_choices_label(data: ScoreData, idx) -> str:
+    """兼容旧名：DeepSeek 裁定里原本用它取本地声部名。"""
+    return part_label(data, idx)
 
 
 def _window_choices(matrix_row: dict, data: ScoreData,
@@ -510,6 +528,28 @@ def apply_shape_gate(data: ScoreData, s: float, e: float, ranked: list,
 
 # ---------------------------------------------------------------- 导出
 
+def _pitches_for(ev, seg: dict):
+    """这次导出该事件留下哪几个音（见 :func:`principal.resolve_principal`）。
+
+    - 保留双音（默认）：**全部留下** —— 平行三度、加八度这类加厚旋律整条留住；
+    - 压成单音：按该段的主音判定表挑一个。表里查不到（事件本身是单音 / 老结果里
+      根本没有主音表）时才退回最高音，不在产物里插空洞 —— 多音事件**一律有判定
+      结果**，哪怕这一段只有一两处双音（少样本口径照样判，不再"跳过"）。
+
+    表里查不到还有一种常见情形：这份 result 是**重导出**读回来的，段的 map 在
+    JSON 往返里键变成了字符串，这里一并兜住。
+    """
+    if seg.get('keep_doubles', True):
+        return list(ev.midi_pitches)
+    raw = (seg.get('principal') or {}).get('map') or {}
+    try:
+        pmap = {round(float(k), 4): v for k, v in raw.items() if v is not None}
+    except (TypeError, ValueError, AttributeError):
+        pmap = {}
+    hit = pmap.get(round(float(ev.offset), 4))
+    return [hit] if hit is not None else [max(ev.midi_pitches)]
+
+
 def _export_absolute(data: ScoreData, segments: list, measure_offsets: dict,
                      bar_ql: float, options: dict):
     """原位导出：各段留在真实小节位置，未覆盖区间留白（MIR 语义）。"""
@@ -524,7 +564,8 @@ def _export_absolute(data: ScoreData, segments: list, measure_offsets: dict,
         spans.append({'offset': s, 'part_index': seg['part_index']})
         src = data.parts[seg['part_index']]
         for ev in mex.events_in(src, s, e):
-            part.insert(ev.offset, mex.make_note(ev))
+            part.insert(ev.offset,
+                        mex.make_note(ev, pitches=_pitches_for(ev, seg)))
     # 节奏 / 音色：原位导出保留原曲小节位置，故按真实位置写入
     tempo_desc = mex.apply_tempo(part, data, measure_offsets, bar_ql, options)
     inst_desc = mex.apply_instruments(part, data, spans, options)
@@ -549,7 +590,8 @@ def _export_spliced(data: ScoreData, segments: list, measure_offsets: dict,
         for ev in mex.events_in(src, s, e):
             # 时值裁剪到段尾，避免上一段的长音压到下一段头上
             part.insert(cursor + (ev.offset - s),
-                        mex.make_note(ev, mex.clamped_duration(ev, e)))
+                        mex.make_note(ev, mex.clamped_duration(ev, e),
+                                      pitches=_pitches_for(ev, seg)))
         cursor += span
     # 拼接后小节已与原曲错位，变速标记没有意义，退化为单一速度
     if options['tempo_mode'] == 'original':
@@ -566,13 +608,13 @@ def _export_spliced(data: ScoreData, segments: list, measure_offsets: dict,
 
 def build_export_parts(data: ScoreData, segments: list, options: dict,
                        measure_offsets=None, bar_ql=None, shape_tag: str = '',
-                       run_tag: str = '') -> list:
+                       run_tag: str = '', double_tag: str = '') -> list:
     """构建两种版本的导出 Part（**不落盘**）。
 
     返回 [{'key', 'stem', 'part', 'desc'}]：
       key  = 结果字典里的键（absolute / spliced，保持稳定）
-      stem = 落盘文件名主干，带形态层标记 / 节奏 / 音色 / 运行序号后缀
-             （换选项、换口径、换一次运行就换文件名，避免同名覆盖后浏览器
+      stem = 落盘文件名主干，带形态层标记 / 双音口径 / 节奏 / 音色 / 运行序号
+             后缀（换选项、换口径、换一次运行就换文件名，避免同名覆盖后浏览器
              给缓存里的旧文件）
 
     "按当前设置直接下载"与"应用并重新导出"共用这一份，保证两条路导出一致。
@@ -585,7 +627,7 @@ def build_export_parts(data: ScoreData, segments: list, options: dict,
         part, desc = fn(data, segments, measure_offsets, bar_ql, options)
         built.append({'key': kind,
                       'stem': mex.stem_with_options(stem, options, shape_tag,
-                                                    run_tag),
+                                                    run_tag, double_tag),
                       'part': part, 'desc': desc,
                       'time_sig': mex.source_time_sig(data)})
     return built
@@ -593,11 +635,11 @@ def build_export_parts(data: ScoreData, segments: list, options: dict,
 
 def export_segments(data: ScoreData, piece, segments: list, options: dict,
                     measure_offsets=None, bar_ql=None, shape_tag: str = '',
-                    run_tag: str = '') -> dict:
+                    run_tag: str = '', double_tag: str = '') -> dict:
     """按段导出两种版本（供主入口与"重新导出"接口共用）。"""
     out = {}
     for b in build_export_parts(data, segments, options, measure_offsets, bar_ql,
-                                shape_tag, run_tag):
+                                shape_tag, run_tag, double_tag):
         files = save_stream(piece, mex.finalize_part(b['part'], b.get('time_sig')),
                             b['stem'])
         files['options'] = dict(options)
@@ -628,10 +670,20 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
     shape_gate = bool(getattr(config, 'melody_shape_gate', False))
     shape_min = float(getattr(config, 'melody_shape_min_score', 0.35) or 0.35)
     shape_min = max(0.0, min(1.0, shape_min))
+    # 双音口径（默认开）：开 → 一个事件几个音就导出几个音，双音 / 加厚旋律
+    # 原样保留；关 → 每个多音事件只留主音那一个音，由 principal 层挑。
+    keep_doubles = bool(getattr(config, 'melody_keep_doubles', True))
+    # DeepSeek 兜底裁定（默认开）：只在本地判据咬得太紧时才发问；关了就一次
+    # 网络请求都不发。budget 跨窗累计，用完就不再问 —— 大曲子几十个窗全去问
+    # 既慢又贵，还容易让模型在后半程敷衍（见 melody_judge 模块顶部第 3 条）。
+    llm_judge = bool(getattr(config, 'melody_llm_judge', True))
+    judge_budget = [judge_mod.JUDGE_MAX_CALLS] if llm_judge else [0]
+    judge_cases = []
     options = mex.resolve_options(config, options)
-    # 文件名标记：形态层开没开 + 这是第几次运行（每次落盘的文件名都不同，
-    # 重跑不覆盖上一次的产物，历史归档里每一次都能下到它自己那份）
+    # 文件名标记：形态层开没开 + 双音口径 + 这是第几次运行（每次落盘的文件名
+    # 都不同，重跑不覆盖上一次的产物，历史归档里每一次都能下到它自己那份）
     shape_tag = mex.shape_stem_tag(shape_gate, shape_min)
+    double_tag = mex.double_stem_tag(keep_doubles)
     if run_seq is None:
         run_seq = mex.next_run_seq(piece, 'melody_line')
     run_tag = mex.run_stem_tag(run_seq)
@@ -714,6 +766,54 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
         ovr = (low_register_overrides(data, choices, m_start, m_end,
                                       per_part=dyn_part) if low else {})
         best, margin = _pick(choices, voice_priority, ovr, per_part=dyn_part)
+        # ---- DeepSeek 兜底裁定（可选）：本地判据咬得太紧时才问 ----
+        judge = None
+        # 开关关着连 `is_hard` 都不查：一次网络请求都不发，也不必记一堆空案例
+        if llm_judge and judge_mod.is_hard(choices, margin):
+            local_margin = round(margin, 4)
+            judge = judge_mod.judge_window(
+                data, config, w, choices, dyn_part, m_start, m_end,
+                best['part_index'], margin, judge_budget)
+            if judge.get('applied') and judge.get('pick') != best['part_index']:
+                new = next(c for c in choices
+                           if c['part_index'] == judge['pick'])
+                conf = judge.get('confidence')
+                # 置信度：置信度仍在"I 还记得我有多不确定"上 —— 改判的依据是
+                # 模型的一句音乐判断，不是新的算术领先，所以保守地取本地领先
+                # 与模型自报置信度的较大者，不把它抬到"很确定"。
+                if isinstance(conf, (int, float)):
+                    margin = round(max(margin, max(0.0, min(1.0, float(conf)))), 4)
+                best = new
+            judge_cases.append({
+                'window': w['window'],
+                'start_measure': w['start_measure'],
+                'end_measure': w['end_measure'],
+                'local_part_index': judge['prev'],
+                'local_part_name': _window_choices_label(data, judge['prev']),
+                'part_index': best['part_index'],
+                'part_name': best['part_name'],
+                'margin': round(margin, 4),
+                'local_margin': local_margin,
+                'called': judge['called'],
+                'applied': judge['applied'],
+                'reason': judge['reason'],
+                'confidence': judge['confidence'],
+                'candidates': [{
+                    'part_index': c['part_index'],
+                    'part_name': c['part_name'],
+                    'salience': c['salience'],
+                    'is_voice': c['is_voice'],
+                    'low_register': c['low_register'],
+                    'note_count': next(
+                        (d.get('note_count') for d in (dyn_part or [])
+                         if int(d.get('part_index', -1)) == c['part_index']),
+                        None),
+                    'mean_pitch': next(
+                        (d.get('mean_pitch') for d in (dyn_part or [])
+                         if int(d.get('part_index', -1)) == c['part_index']),
+                        None),
+                } for c in choices[:judge_mod.JUDGE_MAX_PARTS]],
+            })
         win_rows.append({
             'window': w['window'],
             'start_measure': w['start_measure'],
@@ -754,6 +854,7 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
     runs = _merge_short_runs(runs, min_bars)
     segments = []
     shape_replacements = []
+    principal_cases = []
     for i, r in enumerate(runs):
         s, e = mex.seg_range(data, measure_offsets, bar_ql,
                              r['start_measure'], r['end_measure'])
@@ -777,6 +878,36 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
                     'reason': shape_reason,
                 })
         notes = mex.events_in(data.parts[owner], s, e)
+        # 主音判定（只在"不保留双音"时做）：这一段每个同时响多个音的事件，
+        # 主旋律在唱的是哪一个。保留双音时整停用 —— 一个事件的音一个不少。
+        pr = (principal_mod.resolve_principal(
+                  data, owner, s, e, measure_offsets, bar_ql, config)
+              if not keep_doubles else None)
+        pr_brief = None
+        if pr is not None:
+            pr_brief = {
+                'resolved_by': pr.get('resolved_by'),
+                'chosen_rank': pr.get('chosen_rank'),
+                'margin': pr.get('margin'),
+                'chord_event_count': pr.get('chord_event_count'),
+                'small_sample': pr.get('small_sample'),
+                'map': {str(r['offset']): r['principal']
+                        for r in pr.get('per_event', [])
+                        if r.get('principal') is not None},
+            }
+            principal_cases.append({
+                'segment': f"{r['start_measure']}–{r['end_measure']}",
+                'part_name': data.parts[owner].name,
+                'resolved_by': pr.get('resolved_by'),
+                'chosen_rank': pr.get('chosen_rank'),
+                'margin': pr.get('margin'),
+                'chord_event_count': pr.get('chord_event_count'),
+                'small_sample': pr.get('small_sample'),
+                'layers': pr.get('layers') or [],
+                'llm': pr.get('llm'),
+                'events': [row for row in pr.get('per_event', [])
+                           if len(row.get('pitches') or []) >= 2],
+            })
         rows = [x for x in win_rows
                 if x['part_index'] is not None
                 and r['start_measure'] <= x['start_measure'] <= r['end_measure']
@@ -804,6 +935,9 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
             'shape': shape_info,
             'shape_replaced_from': replaced_from,
             'shape_reason': shape_reason,
+            # 双音口径写进每段：重导出时不重新判定，沿用这一次跑出来的主音表
+            'keep_doubles': keep_doubles,
+            'principal': pr_brief,
         })
 
     # ---- ④ 覆盖率与掩膜摘要 ----
@@ -901,6 +1035,29 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
         'shape_gate_threshold': shape_min if shape_gate else None,
         'shape_replacements': len(shape_replacements),
         'shape_replacement_notes': shape_replacements,
+        # 双音口径（系统设置「主旋律线保留双音」，默认开）
+        #   keep_doubles=True  → 产物里一个事件几个音就几个音（和弦）
+        #   keep_doubles=False → 只留主音那一个音，cases 里逐段记着怎么挑的
+        'double': {
+            'keep': keep_doubles,
+            'tag': mex.double_label(keep_doubles),
+            'enabled': not keep_doubles,      # 主音判定层这次有没有真的启用
+            'cases': principal_cases,
+            'llm_called': sum(1 for c in principal_cases
+                              if (c.get('llm') or {}).get('called')),
+        },
+        # DeepSeek 兜底裁定（系统设置「判定困难时交给 DeepSeek」，默认开）：
+        #   called  —— 真的发问了几个窗
+        #   applied —— 其中被采纳、改动了归属的有几个
+        'llm_judge': {
+            'enabled': llm_judge,
+            'asked': len(judge_cases),
+            'called': sum(1 for c in judge_cases if c['called']),
+            'applied': sum(1 for c in judge_cases if c['applied']),
+            'budget': judge_mod.JUDGE_MAX_CALLS if llm_judge else 0,
+            'margin': judge_mod.JUDGE_MARGIN,
+            'windows': judge_cases,
+        },
         'segments': segments,
         'coverage': {
             'total_bars': total_bars,
@@ -934,7 +1091,7 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
         result['exports'] = export_segments(
             data, piece, segments, options,
             measure_offsets=measure_offsets, bar_ql=bar_ql,
-            shape_tag=shape_tag, run_tag=run_tag)
+            shape_tag=shape_tag, run_tag=run_tag, double_tag=double_tag)
     except Exception as exc:  # noqa: BLE001
         # 导出失败不该让整步失败：分段结果仍然有效
         result['export_error'] = f'{exc}'

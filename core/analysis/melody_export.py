@@ -179,7 +179,7 @@ def export_run_tag(output: dict | None, piece, step: str) -> str:
 
 
 def stem_with_options(stem: str, options: dict, shape_tag: str = '',
-                      run_tag: str = '') -> str:
+                      run_tag: str = '', double_tag: str = '') -> str:
     """导出文件名（stem）带上形态层标记 + 节奏 / 音色选项 + 运行序号。
 
     以前所有选项都落同一个文件名（如 melody_line_absolute.mid），重新导出只是
@@ -191,7 +191,9 @@ def stem_with_options(stem: str, options: dict, shape_tag: str = '',
       shape_tag —— 开了「形态决定资格」的提取单独一份文件（口径不同、归属
                    可能不同，不能和没开的那份互相覆盖）；
       run_tag   —— 每次运行一份（``r1`` / ``r2``…），重跑不再覆盖上一次的
-                   产物，历史归档里每一次运行都能下到它自己那份。
+                   产物，历史归档里每一次运行都能下到它自己那份；
+      double_tag —— 双音口径（``doubles`` / ``single``）：保留双音时产物是
+                   和弦，压成单音时产物是单音线，两者不能互相覆盖。
     """
     tempo = ('orig-tempo' if options['tempo_mode'] == 'original'
              else f'{int(options["bpm"])}bpm')
@@ -200,6 +202,8 @@ def stem_with_options(stem: str, options: dict, shape_tag: str = '',
     parts = [stem]
     if shape_tag:
         parts.append(shape_tag)
+    if double_tag:
+        parts.append(double_tag)
     parts += [tempo, inst]
     if run_tag:
         parts.append(run_tag)
@@ -207,17 +211,20 @@ def stem_with_options(stem: str, options: dict, shape_tag: str = '',
 
 
 def download_filename(title: str, kind_label: str, options: dict,
-                      ext: str = '.mid', shape_tag: str = '') -> str:
+                      ext: str = '.mid', shape_tag: str = '',
+                      double_tag: str = '') -> str:
     """给"按当前设置直接下载"用的可读文件名。
 
-    例：Potong Bebek Angsa_主旋律线_96BPM_小提琴.mid
-    开了形态资格层时 kind_label 后面多一段「形态0.35」，下下来的两份一眼能分清。
+    例：Potong Bebek Angsa_主旋律线_保留双音_96BPM_小提琴.mid
+    开了形态资格层时 kind_label 后面多一段「形态0.35」；双音口径跟在后面，
+    保留双音与压成单音的两份一眼能分清。
     """
     tempo = ('原始节奏' if options['tempo_mode'] == 'original'
              else f'{int(options["bpm"])}BPM')
     inst = ('各段原始音色' if options['instrument_mode'] == 'original'
             else gm_name(options['program']))
-    label = f'{kind_label}_{shape_tag}' if shape_tag else kind_label
+    tags = [t for t in (shape_tag, double_tag) if t]
+    label = f'{kind_label}_{"_".join(tags)}' if tags else kind_label
     base = f'{title}_{label}_{tempo}_{inst}{ext}'
     # 去掉文件名里不安全的字符（Windows 不允许 \ / : * ? " < > |）
     return re.sub(r'[\\/:*?"<>|\r\n\t]', '_', base)[:120]
@@ -273,14 +280,45 @@ def clamped_duration(ev, e: float) -> float:
     return min(dur, remain)
 
 
-def make_note(ev, duration: float | None = None):
-    """事件 → music21 音符（和弦取最高音，与显著性口径一致）。"""
-    from music21 import note as m21note
+def make_note(ev, duration: float | None = None, pitches=None):
+    """事件 → music21 音符 / 和弦。
 
-    n = m21note.Note()
-    n.pitch.midi = max(ev.midi_pitches)
-    n.duration.quarterLength = duration if duration is not None else ev.duration
+    ``pitches`` 说的是**这次导出要留下哪几个音**：
+
+    - ``None``（默认）：只留最高音（skyline 基线，与各显著性口径一致）；
+    - 一个音：单音 Note；
+    - 多个音：和弦 Chord —— 「主旋律线保留双音」打开时走这条路，平行三度 /
+      六度、加八度这类加厚旋律会原样留在产物里；
+    - 空列表：退回最高音（宁可不完美，也不在产物里插一个空洞）。
+
+    单音模式下 ``pitches`` 由 :func:`principal.principal_map` 按事件查得，
+    它是"这一瞬间主旋律在唱的那个音"，不是最高音。
+    """
+    from music21 import chord as m21chord, note as m21note
+
+    want = [p for p in (pitches if pitches is not None else []) if p is not None]
+    ql = duration if duration is not None else ev.duration
+    if len(want) >= 2:
+        n = m21chord.Chord(sorted(want))
+    else:
+        n = m21note.Note()
+        n.pitch.midi = want[0] if want else max(ev.midi_pitches)
+    n.duration.quarterLength = ql
     return n
+
+
+def double_stem_tag(keep_doubles: bool) -> str:
+    """双音口径的 stem 标记：保留双音 → ``doubles``，压成单音 → ``single``。
+
+    与 ``shape_tag`` 同理：两种口径导出的**音不是一个数**（一个是和弦、一个是
+    单音），写同一个文件名会互相覆盖 —— 切一下开关再导出，前一份就没了。
+    """
+    return 'doubles' if keep_doubles else 'single'
+
+
+def double_label(keep_doubles: bool) -> str:
+    """下载文件名里可读的双音标记：``保留双音`` / ``单音主音``。"""
+    return '保留双音' if keep_doubles else '单音主音'
 
 
 # ---------------------------------------------------------------- 节奏 / 音色
