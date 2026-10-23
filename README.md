@@ -131,6 +131,39 @@ def transcribe_instrumental_with_voice(audio_path, output_midi_path, progress_ca
 接好之后：上传音频 → 勾选"含人声"与否 → 系统自动选择对应管线 →
 MIDI → MusicXML → 全部分析步骤自动可用。
 
+### 音频格式支持与 m4a 的坑（2026-10-23 排查结论）
+
+上传层放行的音频格式与 MuScriptor **实际能解码**的格式并不一致：
+
+| 格式 | 上传层 | 转录层 | 说明 |
+|---|---|---|---|
+| `.wav` / `.flac` / `.ogg` / `.mp3` | ✅ | ✅ | WAV 走 stdlib `wave`，其余走 soundfile（libsndfile），均可解 |
+| `.m4a` | ✅ | ❌ | **解不了**，报"转录失败 / 格式不支持" |
+
+原因：MuScriptor 的音频加载（`muscriptor/utils/audio.py` → `load_audio()`）
+只实现了两条解码路径 —— stdlib `wave`（仅 PCM WAV）和 `soundfile`（libsndfile）。
+而 **libsndfile 从未支持 MP4 容器 / AAC 编码**（本机 soundfile 0.14.0 +
+libsndfile 1.2.2 实测可用格式表中无 M4A）。README 里"支持 m4a"的说法是基于
+libsndfile 的错误推断，从未真正成立：
+
+- m4a 上传 → stdlib `wave` 抛 `wave.Error` → 回落 `sf.read()` 抛
+  `LibsndfileError` → 被 `legacy/pyScriptor_base__func.py` 的 except 吞掉
+  （打印 `[pyScriptor] 转录失败: ...` 后返回 None）→
+  `core/converters/muscriptor.py` 转为 `MuScriptorTranscriptionError`；
+- 升级 libsndfile / soundfile 也**帮不上忙**：AAC-in-MP4 支持是 libsndfile
+  的历史遗留开放议题，因 AAC 专利授权与 LGPL 依赖许可冲突，官方长期
+  拒绝内置 AAC 解码器（libsndfile 1.1.0 新增的是 MP3，不是 m4a），
+  各版本均不支持，短期内不会变。
+
+**解决办法**（任选其一）：
+
+1. **上传前手动转码**：`ffmpeg -i 输入.m4a -vn 输出.mp3`（本机已装 ffmpeg）；
+2. 在 `core/converters/muscriptor.py` 的 `transcribe()` 入口加**自动预转换**：
+   检测到非 libsndfile 兼容容器（m4a / mp4 / wma 等）时先经 ffmpeg 转 WAV
+   再送转录（推荐做法，需要时在此入口处补上即可）；
+3. 给环境换解码后端：用 PyAV(`av`) 或 torchaudio 的 ffmpeg backend 替换
+   `_read_non_wav_file`（改动大，不推荐）。
+
 ## 五、dsh 说明
 
 - 后端通过 `dsh --profile <name> -`（stdin 传任务）调用 DeepSeek；

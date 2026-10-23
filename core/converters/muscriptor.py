@@ -76,6 +76,8 @@ from legacy.pyScriptor_base__func import (          # noqa: E402
     pyscriptor_transcribe_and_postprocess,          # 纯器乐转录（已实现）
 )
 
+from legacy.audio_to_wav import to_wav#2026.10.23
+
 from dataclasses import dataclass, field            # noqa: E402
 from typing import Callable, List, Optional, Tuple  # noqa: E402
 
@@ -214,6 +216,10 @@ def transcribe_instrumental(
 
     实现参见模块 docstring【纯器乐】一节。
     """
+    #判断是否m4a#2026.10.23#
+    if os.path.splitext(audio_path).lower() == '.m4a':
+        audio_path = to_wav(audio_path)
+
     rslt = pyscriptor_transcribe_and_postprocess(audio_path, output_midi_path)
     if rslt is not True:
         # legacy 内部 except 掉异常后返回 None（只打印 "[pyScriptor] 转录失败"），
@@ -237,6 +243,11 @@ def transcribe_instrumental_with_voice(
     output_midi_path: str | Path,
     progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> TranscriptionResult:
+    
+    #判断是否m4a#2026.10.23#
+    if os.path.splitext(audio_path).lower() == '.m4a':
+        audio_path = to_wav(audio_path)
+    
     """器乐 + 人声音频 → MIDI（两遍转录再合并）。
 
     参数同 transcribe_instrumental。
