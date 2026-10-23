@@ -25,7 +25,25 @@
    第一名自身，是因为显著性在窗内做了 min-max 归一：两个声部时第一名最低也有
    0.5，看不出"人声 0.85 压过吉他 0.30"和"0.51 险胜 0.49"的区别。
    只有一个声部在响时无竞争，margin 记为 1.0；
-5. **形态资格层（可选，默认关，在账户总体设置里开）**：形态决定「有没有资格」，
+5. **平线否决（恒生效，不是可选项）**：窗级候选先过「这是不是一条线」
+   （:func:`is_flat_line`）—— 踏板音 / 柱式和弦伴奏取最高音后常常是一条平线，
+   而它在显著性里靠"和弦取最高音"音高虚高、在形态里靠"音程全 0"拿满分
+   （级进比 / 拱形度 / 平滑度三项齐满分 = 形态分 1.0），两条都是假证据。
+   **但平线有两种，必须分开**（:func:`flat_kind`，判据是"一次响几个音"）：
+
+   - **柱式和弦 / 踏板铺底**（多音事件占了一半以上）→ **剥夺资格**，不当主旋律；
+   - **同音反复的单音线条** → 这很可能是**吟诵式旋律**：旋律性弱的流行歌、民歌
+     的收句（非洲民歌《巴努瓦》最后一句整句唱 do）一大串音都在同一个音高上，
+     它就是主旋律在唱。**只降级为存疑候选**（排到毫无疑点的候选之后），
+     不剥夺资格 —— 没有更像旋律的候选时仍由它演唱。
+
+   **人声豁免**：人在唱就是主旋律，这是掩膜级的强先验，比形态硬。
+   这一条与下面第 6 条分得清清楚楚：第 6 条是可开关的加分项，
+   本条是恒生效的资格闸，关掉形态层它照样在；
+   本地在 chord / chant 上拿不准时（两者显著性咬得紧），如果开了
+   「判定困难时交给 DeepSeek」，会把这一整窗连同这个分歧一起发给模型
+   （见 :func:`melody_judge.line_dispute`，第二种发问场合）；
+6. **形态资格层（可选，默认关，在账户总体设置里开）**：形态决定「有没有资格」，
    显著性决定「谁更强」—— 形态只做**否决**，不参与加分、不改 margin。
    段级算出各声部的旋律轮廓形态分（级进比 / 拱形度 / 轮廓平滑度），
    当前归属声部形态不合格时，由段内形态合格且显著性最高的声部顶上。
@@ -33,7 +51,12 @@
    它们的动机重复度接近 1.0，单看显著性很容易赢过真正的人声旋律。
    两条安全设计：① 段内音符太少不足以统计轮廓时**不作判定、一律放行**；
    ② 所有声部都不合格时**保留原归属**，绝不把整段丢掉；
-6. 导出两种：
+   柱式和弦那种假满分（第 5 条）在这里同样被否决，堵住"形态 1.0 的踏板把真
+   旋律顶掉"的漏洞；而同音反复的吟诵**不在这里否决** —— 它形态满分说的是
+   "一直在同一个音上"，不是"它是伴奏"；
+   形态层换人时若接替者的显著性比原归属差一大截，这一换是全凭形态孤证，
+   开了 DeepSeek 就复核一句（:func:`melody_judge.shape_dispute`）；
+7. 导出两种：
    - absolute：**原位**写入（各段保留真实小节位置，段间空隙留白）——MIR 语义；
    - spliced：首尾相接的连续单声部（方便当一条旋律线听 / 导入 DAW）。
 """
@@ -70,7 +93,9 @@ def _window_choices_label(data: ScoreData, idx) -> str:
 
 
 def _window_choices(matrix_row: dict, data: ScoreData,
-                    low: set = frozenset(), doubles: dict | None = None) -> list:
+                    low: set = frozenset(), doubles: dict | None = None,
+                    seqs: dict | None = None,
+                    ratios: dict | None = None) -> list:
     """一个窗的 {part_index: salience} → 按显著性降序的候选列表。
 
     ``low`` 是低音区声部（比全曲最高声部低 ≥ 2 个八度），在这里**只打标记**
@@ -80,19 +105,38 @@ def _window_choices(matrix_row: dict, data: ScoreData,
 
     ``doubles`` 是齐奏加倍分组（见 :func:`voice_id.doubling_groups`）：同一条
     旋律被多件乐器同奏时它们算**同一条线索**，互相之间不构成竞争。
+
+    ``seqs`` 是 {part_index: 音高序列}（和弦取最高音，同 :func:`_seg_pitch_seq`）；
+    ``ratios`` 是 {part_index: 多音事件占比}（同 :func:`chord_ratio`）。
+    两个都传就给每个候选打上 ``flat_line`` 与 ``flat_kind`` 标记
+    （见 :func:`is_flat_line` / :func:`flat_kind`）—— 分开两种平线：
+    **柱式和弦伴奏** 失去资格，**同音反复的吟诵** 只是降级为存疑候选。
+    **不传则一律不打标记** —— 只调这一个函数、没算序列的场合（判定层、测试）
+    行为与以前逐位一致，不会凭空多出一道闸。
     """
     doubles = doubles or {}
+    seqs = seqs or {}
+    ratios = ratios or {}
     items = []
     for idx, sc in matrix_row.get('scores', {}).items():
         i = int(idx)
         group = doubles.get(i, i)
         peers = sorted(j for j, g in doubles.items() if g == group and j != i)
+        seq = seqs.get(i) or []
+        kind = flat_kind(seq, ratios.get(i, 0.0)) if seq else 'none'
         items.append({
             'part_index': i,
             'part_name': data.part_names[i] if i < len(data.part_names) else f'Part {i}',
             'salience': float(sc),
             'is_voice': data.parts[i].is_voice if i < len(data.parts) else False,
             'low_register': i in low,
+            # 平线（踏板音 / 柱式持续音 / 同音反复）：见 _pick 的三档处理
+            'flat_line': kind != 'none',
+            # 'chord' 确定是伴奏（多音事件为主）→ 出局；
+            # 'chant' 很可能是吟诵式旋律（单音反复）→ 只降级，见 _pick
+            'flat_kind': kind,
+            'chant_suspect': kind == 'chant',
+            'chord_ratio': ratios.get(i, 0.0),
             # 同组 = 同一条旋律（齐奏加倍），算 margin 时互相排除
             'group': group,
             'doubled_with': peers,
@@ -143,6 +187,21 @@ LOW_MELODY_MIN_PITCHES = 3          # 至少几个不同音高
 LOW_MELODY_MIN_RANGE = 4            # 至少跨多少半音（一个大三度）
 
 
+# ------------------------------------------ 平线的**性质**：和弦铺底 vs 吟诵
+# 「连着好几个音都是同一个音高」有两种完全不同的东西，平线闸必须分开对待：
+#
+#   * **柱式和弦 / 踏板铺底（伴奏）**：一个起音同时响好几个音，取最高音之后
+#     变成一条平线。que sera sera 的 PIZZICATO 就是它（三连音柱式和弦，
+#     最高音恒为 E5）。这种**确定**是伴奏，没有资格当主旋律。   * **吟诵 / 同音反复（旋律）**：旋律性弱的流行歌、民歌的收句，
+#     一大串音唱在同一个音高上 —— 非洲民歌《巴努瓦》的最后一句全是 do。
+#     这条线虽然"平"，**它就是主旋律**，不能让给伴奏。
+#
+# 区分两者的判据是**织体**，不是轮廓：柱式和弦是"一次响几个音"，吟诵是"一个音
+# 一个音地唱"。所以用「多音事件占全部发音事件的比例」来判 —— 这个比例 requiere
+# 不需要知道和弦里哪个音在唱，也不依赖 ":func:`principal`" 那一层。
+FLAT_CHORD_RATIO = 0.5      # 多音事件占比 ≥ 此值 → 判为和弦铺底（不是吟诵）
+
+
 # -------------------------------------------------- 力度（"听感"的直接证据）
 # 力度不进显著性四项：那四项是所有模块共用的尺度，动它会连带改写已标定的置信度
 # 分级、历史产物与全部实测结论。它只在两个地方说话：
@@ -167,10 +226,84 @@ def looks_like_line(seq: list) -> bool:
 
     少了这道闸不行：只在一个音上打点的踏板音，级进比 / 拱形度 / 平滑度
     三项全都满分（形态分 1.0），比真旋律还高。
+
+    **只在"要不要给好处"的方向上用**（低音区翻盘）：音数不足时它也判 False，
+    也就是"证据不足 = 不许占便宜"。反过来要"剥夺资格"时必须用
+    :func:`is_flat_line`，那里的证据不足是**放行**。
     """
     if len(set(seq)) < LOW_MELODY_MIN_PITCHES:
         return False
     return (max(seq) - min(seq)) >= LOW_MELODY_MIN_RANGE
+
+
+# ------------------------------------------------ "是不是一条线"（平线否决）
+# 与低音区保护对称的另一半。低音区早就有"太低的别来竞选"，高音区却一直缺
+# "只在一个音上打点的别来竞选" —— 于是柱式和弦伴奏 / 踏板音一路畅通：
+#
+#   * 显著性四项里，和弦一律 **取最高音**（voice_id.window_scores 与
+#     _seg_pitch_seq 都是 max()），柱式和弦因此音高虚高一个八度；
+#   * 取最高音后若和声没换，序列是 E5, E5, E5… —— 音程全 0，**动机重复满分**；
+#   * 更糟的是它对形态三项同样满分：级进比 1.0（全是 0）、拱形度 1.0（每个点
+#     都是最高点）、平滑度 1.0（没有极值点）→ **形态分 1.0，比真旋律还高**。
+#     形态闸门本该挡住伴奏，实际会反过来把主旋律让给它。
+#
+# 所以这里把"是不是一条线"从低音区翻盘那条**支路**提到**主选路径**上：
+# 窗级候选先过这道闸，平线失去当主旋律的资格；形态闸门（shape_eligible）
+# 也接同一道闸，堵住上面那个 1.0 分的公式漏洞。
+#
+# 证据不足时**不否决**：窗内只有两三个音的短句本来就可能只有两个音高，凭这
+# 条把它划掉是误伤。音数门槛与轮廓判定同口径（:data:`SHAPE_MIN_NOTES`）。
+#
+# **只看"有几个不同音高"，不看跨度** —— 这一条是踩出来的：跨度门槛（4 半音）
+# 在"给好处"的方向上是合适的，在"剥夺资格"的方向上太激进。实测
+# `smoke_low_register_test` 用例 A 的大提琴只有四个音（50, 52, 53, 52）：
+# 三个不同音高、跨度 3 半音 —— 它是全曲最高的那条线、本来就该当选，加上跨度
+# 条件后它被判成平线出局，主旋律反而落到恰好跨度 4 的低音提琴上。
+# 踏板音与柱式和弦的特征本来就是"翻来覆去只有一两个音"，**不同音高数**这一条
+# 已经把它们说死了，不需要跨度再来补一刀。
+def is_flat_line(seq: list) -> bool:
+    """这条序列**确定**不是一条旋律线（踏板音 / 柱式持续音 / 单音打点）。
+
+    ``False`` 有两种含义 —— 像一条线，**或者证据不足（音太少）**：两者都放行，
+    本闸只做否决、不做好处。这正是它与 :func:`looks_like_line` 的分工：
+    后者在音少时也判 False（低音区翻盘宁可错杀，不许靠证据不足占便宜），
+    而且它还要再看跨度 —— 门槛更严，因为它决定的是"要不要给好处"。
+    """
+    if len(seq) < SHAPE_MIN_NOTES:
+        return False
+    return len(set(seq)) < LOW_MELODY_MIN_PITCHES
+
+
+def chord_ratio(data: ScoreData, part_index: int, s: float, e: float) -> float:
+    """该声部在 [s, e) 内**多音事件占全部发音事件的比例**（0–1）。
+
+    柱式和弦伴奏一次起音响好几个音 → 接近 1；一个音一个音地唱的吟诵 → 接近 0。
+    这个比值只看"一次响几个音"，不需要先知道"和弦里哪个音在唱"，
+    所以它能在**选轨层**（还没挑主音之前）就把两种平线分开。
+    """
+    evs = mex.events_in(data.parts[part_index], s, e)
+    if not evs:
+        return 0.0
+    multi = sum(1 for ev in evs if len(ev.midi_pitches or []) > 1)
+    return round(multi / len(evs), 4)
+
+
+def flat_kind(seq: list, ratio: float) -> str:
+    """平线是**哪一种**平线：``'none'`` / ``'chord'`` / ``'chant'``。
+
+    ``ratio`` 见 :func:`chord_ratio`（多音事件占比）：
+
+    - ``'chord'`` —— 柱式和弦 / 踏板铺底，**确定**是伴奏，失去主旋律资格；
+    - ``'chant'`` —— 同音反复的旋律（吟诵 / 弱旋律流行歌 / 民歌收句）。
+      这是主旋律在唱，不许剥夺它的资格；它只是"看起来像伴奏"，
+      所以降级为**存疑候选**（排在没有疑点的候选之后），
+      咬得紧时交给模型裁决（见 :func:`melody_judge.line_dispute`）。
+
+    判据落在**织体**上（一次响几个音），不落在轮廓上 —— 轮廓会把两者等量齐观。
+    """
+    if not is_flat_line(seq):
+        return 'none'
+    return 'chord' if (ratio or 0.0) >= FLAT_CHORD_RATIO else 'chant'
 
 
 def _part_dyn(per_part: list):
@@ -212,8 +345,32 @@ def dynamics_lead(per_part: list, cand: int, rivals: list):
     return round(base - max(others), 2)
 
 
+def line_counterpart(seq: list, ratio: float = 0.0) -> bool:
+    """这条线配不配当"低音区翻盘"要超越的**对手**。
+
+    低音能翻盘的前提之一是"上面那条线不成线"。但"不成线"有两种平法，
+    只有一种是真的没人在唱：
+
+    * **柱式和弦 / 踏板铺底**（``'chord'``）—— **不算对手**。上方只剩和声铺底
+      时，低音主奏本来就该翻盘（这条路径设计出来就是为了抓这个）；
+    * **同音反复的吟诵**（``'chant'``）—— **算对手**。它在唱歌，没有给谁让路。
+      不认它的话，低音会因为"上面只有一条平线"自动翻盘，把旋律挤走 ——
+      《巴努瓦》式收句就栽在这里：旋律整句唱 do，低音靠"没有对手"上位。
+
+    ``ratio`` 见 :func:`chord_ratio`。
+    """
+    kind = flat_kind(seq, ratio)
+    if kind == 'chord':
+        return False
+    if kind == 'chant':
+        return True
+    return looks_like_line(seq)
+
+
 def low_register_overrides(data: ScoreData, items: list, s: float, e: float,
-                           per_part: list | None = None) -> dict:
+                           per_part: list | None = None,
+                           seqs: dict | None = None,
+                           ratios: dict | None = None) -> dict:
     """窗内哪些低音区声部该因"听感占优"回来当主旋律。
 
     返回 ``{part_index: {'shape': 形态分, 'shape_lead': 领先多少,
@@ -221,7 +378,9 @@ def low_register_overrides(data: ScoreData, items: list, s: float, e: float,
     不该翻盘时返回空字典。
 
     ``items`` 是窗内候选（同 :func:`_window_choices` 的形状）；``per_part``
-    可直接传 :func:`voice_id.window_scores` 的结果，省掉一次重算。
+    可直接传 :func:`voice_id.window_scores` 的结果，省掉一次重算；``seqs``
+    可直接传主入口已经算好的 {part_index: 音高序列}，``ratios`` 同理（多音事件
+    占比，判"对手"的时候用得到）。不传就地算，结果一致。
     没有任何非低音候选时返回空 —— 那种情形由"整窗只剩低音在响"兜底处理。
     """
     lows = [c for c in items if c.get('low_register')]
@@ -233,7 +392,11 @@ def low_register_overrides(data: ScoreData, items: list, s: float, e: float,
         per_part = voice_mod.window_scores(data, s, e)['per_part']
     sub = {d['part_index']: d.get('substance', 0.0)
            for d in per_part if not d.get('empty')}
-    seqs = {c['part_index']: _seg_pitch_seq(data, c['part_index'], s, e)
+    seqs = seqs or {}
+    ratios = ratios or {}
+    seqs = {c['part_index']: (seqs[c['part_index']]
+                              if c['part_index'] in seqs
+                              else _seg_pitch_seq(data, c['part_index'], s, e))
             for c in items}
     # 上方候选的音符太少（形态分为 None，不作判定）→ **不翻盘**。
     # 证据不足应当维持原判，不能反过来让低音占便宜（naik 的尾声就是这样：
@@ -244,8 +407,11 @@ def low_register_overrides(data: ScoreData, items: list, s: float, e: float,
         if sc is None:
             return {}
         shapes[c['part_index']] = sc
-    # 上方候选里真正"像一条旋律线"的那些（不同音高够多、跨度够大）
-    line_like = [c for c in others if looks_like_line(seqs[c['part_index']])]
+    # 上方候选里真正"是一条线在唱"的那些 —— 见 :func:`line_counterpart`：
+    # 柱式和弦铺底**不算**对手，同音反复的吟诵**算**
+    line_like = [c for c in others
+                 if line_counterpart(seqs[c['part_index']],
+                                     ratios.get(c['part_index'], 0.0))]
     out = {}
     for c in lows:
         seq = seqs[c['part_index']]
@@ -295,6 +461,40 @@ def best_override(overrides: dict):
     return max(overrides, key=lambda k: overrides[k]['shape'])
 
 
+def candidate_tier(c: dict, override: dict | None = None) -> int:
+    """候选在窗内的**资格档位**：0 正常竞选 / 1 存疑（降级）/ 2 出局。
+
+    两道否决一起来的时候要分得清清楚楚：
+
+    * **低音区只由低音区排除管**，平线闸不插手 —— 低音区排除挡的是"音区太低"
+      （哪怕它是一条漂亮的走动贝斯），平线闸挡的是"根本不成线"（哪怕它音区很
+      高）。让平线闸也去管低音，等于把踏板贝斯挡两遍，还会把
+      :func:`low_register_overrides` 辛苦翻盘回来的低音线条又否掉（翻盘已经验过
+      它"成线"了，不需要再验一次）。
+    * **平线要先问是哪一种平线**（:func:`flat_kind`）。柱式和弦铺底（多音事件为
+      主）出局；而**单音的同音反复**很可能就是主旋律 —— 吟诵、旋律性弱的流行歌、
+      《巴努瓦》那样全唱 do 的收句 —— 它只是"看起来像伴奏"，降级为存疑候选，
+      排到毫无疑点的候选之后，**不剥夺资格**。
+    * **人声豁免**：人在唱就是主旋律，这是掩膜级的强先验，比形态硬
+      （吟诵式的一段同音也是人在唱，不该让给伴奏）。
+
+    缺 ``flat_kind`` 的老口径候选（测试里手工构造的 dict）按柱式和弦处理 ——
+    与 2026-10-22 那一版逐位一致。
+
+    档位 2 **不一定真的出局**：整窗候选全被否掉时 :func:`_pick` 会按显著性退回，
+    绝不把整窗记成静默。
+    """
+    override = override or {}
+    if c.get('low_register'):
+        return 0 if c['part_index'] in override else 2
+    if c.get('is_voice'):
+        return 0
+    if not c.get('flat_line'):
+        return 0
+    kind = c.get('flat_kind') or 'chord'
+    return 2 if kind == 'chord' else 1
+
+
 def _pick(choices: list, voice_priority: bool, override: dict | None = None,
           per_part: list | None = None):
     """窗内选轨：低音翻盘 → 人声优先 → 显著性最高 → 力度裁决。返回 (选中项, margin)。
@@ -318,10 +518,29 @@ def _pick(choices: list, voice_priority: bool, override: dict | None = None,
         return None, 0.0
     override = override or {}
 
-    def _ok(c) -> bool:
-        return not c.get('low_register') or c['part_index'] in override
+    def _tier(c) -> int:
+        return candidate_tier(c, override)
 
-    eligible = [c for c in choices if _ok(c)] or choices
+    def _ok(c) -> bool:
+        return _tier(c) < 2
+
+    # 先由「毫无疑点」的候选竞选。**存疑的同音反复只在它压不住别人时才往后
+    # 排** —— 显著性已经把话说清楚的时候不该拿"它平不平"去推翻：
+    #   吟诵 0.75 对上一条显著性 0.25 的支声旋律，让 0.25 赢只因为它"更像旋律"，
+    #   等于把"降级"用成了"剥夺"（用户提的《巴努瓦》收句、弱旋律流行歌正是这种
+    #   局面）。差距 ≤ JUDGE_FLAT_BAND 才是本地真的分不清 —— 那也是
+    #   :func:`melody_judge.line_dispute` 判"该去问模型"的同一条线，两处必须同口径。
+    clean = [c for c in choices if _tier(c) == 0]
+    demoted = [c for c in choices if _tier(c) == 1]
+    blocked = [c for c in choices if _tier(c) == 2]
+    if clean:
+        ceiling = max(c['salience'] for c in clean) + judge_mod.JUDGE_FLAT_BAND
+        keeps = [c for c in demoted if c['salience'] >= ceiling]
+        eligible = sorted(clean + keeps, key=lambda c: -c['salience'])
+    else:
+        # 一个毫无疑点的都没有：退到存疑档；连存疑档也空（整窗全是柱式和弦
+        # 平线）才退回全体 —— 绝不把整窗记成静默。
+        eligible = demoted or blocked or choices
 
     def _margin(best: dict) -> float:
         # 竞争对手只算**有资格当主旋律**的声部：
@@ -435,15 +654,19 @@ def _seg_pitch_seq(data: ScoreData, part_index: int, s: float, e: float) -> list
     return [max(ev.midi_pitches) for ev in evs if ev.midi_pitches]
 
 
-def contour_shape(seq: list) -> dict:
+def contour_shape(seq: list, ratio: float = 0.0) -> dict:
     """音高序列 → 旋律轮廓形态分（0–1，越大越像"一条旋律"）。
+
+    ``ratio`` 是同一段的多音事件占比（:func:`chord_ratio`），用来把平线分成
+    "柱式和弦铺底"与"单音同音反复"，两种的处理方式完全不同（见 :func:`shape_eligible`）。
+    不传则按单音处理（= 不剥夺资格）。
 
     ``score`` 为 None = "音符太少，不作判定"，调用方必须按**放行**处理。
     """
     n = len(seq)
     if n < SHAPE_MIN_NOTES:
-        return {'note_count': n, 'score': None,
-                'reason': f'仅 {n} 个音，不足以判定轮廓'}
+        return {'note_count': n, 'score': None, 'flat': False,
+                'flat_kind': 'none', 'reason': f'仅 {n} 个音，不足以判定轮廓'}
     ivs = interval_seq(seq)
     step_ratio = sum(1 for iv in ivs if abs(iv) <= 2) / len(ivs)
     # 拱形度：最高音位置的居中程度。有多个最高点时取**中位**位置 —— 否则
@@ -462,8 +685,14 @@ def contour_shape(seq: list) -> dict:
     score = round(SHAPE_WEIGHTS[0] * step_ratio
                   + SHAPE_WEIGHTS[1] * arch
                   + SHAPE_WEIGHTS[2] * smooth, 4)
+    okind = flat_kind(seq, ratio)
     return {
         'note_count': n,
+        # 平线要分清是哪一种：chord（柱式和弦铺底）的形态满分是**公式漏洞**，
+        # 由 shape_eligible 直接否决；chant（单音同音反复）的形态满分则要看
+        # 它的织体是不是在唱歌，不能凭这一项剥夺资格。
+        'flat': okind != 'none',
+        'flat_kind': okind,
         'step_ratio': round(step_ratio, 4),
         'arch': round(arch, 4),
         'contour_smooth': round(smooth, 4),
@@ -472,9 +701,28 @@ def contour_shape(seq: list) -> dict:
 
 
 def shape_eligible(shape: dict, min_score: float) -> bool:
-    """形态是否够格当主旋律。score 为 None（证据不足）一律放行。"""
+    """形态是否够格当主旋律。
+
+    两道闸，**平线那道在前**，但只针对**柱式和弦铺底**（``flat_kind == 'chord'``）：
+    它的音程全是 0 → 级进比 1.0、拱形度近满分、平滑度 1.0 → 形态分接近满分。
+    让它去比分数，它会赢过真旋律，形态闸门就成了"把主旋律让给伴奏"的通道。
+
+    **单音的同音反复（``'chant'``）不在这里否决**：吟诵 / 弱旋律流行歌 / 《巴努瓦》
+    那样全唱 do 的收句，形态三项同样是满分 —— 但那次满分说的不是"它是伴奏"，
+    而是"它一直在同一个音上"，证据指向不同的结论。它的形态分本来就高于阈值，
+    按分数线自然通过，不需要额外否决。
+
+    score 为 None（音太少，证据不足）一律放行 —— 这道闸只做否决。
+    """
     sc = shape.get('score')
-    return True if sc is None else sc >= min_score
+    if sc is None:
+        return True
+    kind = shape.get('flat_kind')
+    if kind is None:                      # 老产物没有这个字段
+        kind = 'chord' if shape.get('flat') else 'none'
+    if kind == 'chord':
+        return False
+    return sc >= min_score
 
 
 def _seg_ranked_salience(win_scores: dict, start_m: int, end_m: int,
@@ -506,7 +754,11 @@ def apply_shape_gate(data: ScoreData, s: float, e: float, ranked: list,
     返回 ``(chosen_index, shapes, reason)``；reason 为空表示没有换人。
     一个合格的都没有时**保留原归属**，绝不把整段丢掉。
     """
-    shapes = {idx: contour_shape(_seg_pitch_seq(data, idx, s, e))
+    # 形态分要用**窗级同一套口径**：序列取最高音、平线再按多音事件占比分
+    # chord / chant（contour_shape 不传 ratio 时会把吟诵当成柱式和弦处理，
+    # 平线闸的效果就在段级悄悄换了一套）。
+    shapes = {idx: contour_shape(_seg_pitch_seq(data, idx, s, e),
+                                 chord_ratio(data, idx, s, e))
               for idx, _ in ranked}
     for sh in shapes.values():
         sh['eligible'] = shape_eligible(sh, min_score)
@@ -514,8 +766,18 @@ def apply_shape_gate(data: ScoreData, s: float, e: float, ranked: list,
     if cur is None or cur['eligible']:
         return current_idx, shapes, ''
     cur_name = data.parts[current_idx].name
-    why = (f"形态分 {cur['score']}（级进 {cur['step_ratio']} / "
-           f"拱形 {cur['arch']} / 平滑 {cur['contour_smooth']}）低于下限 {min_score}")
+    if cur.get('flat_kind') == 'chord':
+        # 平线的形态分是 1.0，写"低于下限 0.35"会自相矛盾。这里必须说清
+        # 它是**假满分**：音程全是 0 → 级进比 / 拱形度 / 平滑度三项齐满分。
+        seq = _seg_pitch_seq(data, current_idx, s, e)
+        why = (f"是一条平线（{cur['note_count']} 个音里只有 {len(set(seq))} 个"
+               f"不同音高、跨度 {max(seq) - min(seq)} 半音）—— 柱式和弦 / 踏板"
+               f"持续音的音程全是 0，级进比 {cur['step_ratio']} / 拱形 "
+               f"{cur['arch']} / 平滑 {cur['contour_smooth']} 三项齐满分，"
+               f"形态分 {cur['score']} 是假满分")
+    else:
+        why = (f"形态分 {cur['score']}（级进 {cur['step_ratio']} / "
+               f"拱形 {cur['arch']} / 平滑 {cur['contour_smooth']}）低于下限 {min_score}")
     for idx, _ in ranked:
         if idx == current_idx or not shapes.get(idx, {}).get('eligible'):
             continue
@@ -524,6 +786,43 @@ def apply_shape_gate(data: ScoreData, s: float, e: float, ranked: list,
                              f"（形态分 {shapes[idx]['score']}）承担")
     return current_idx, shapes, (
         f'{cur_name}{why}，但段内没有形态合格的替代声部，保留原归属')
+
+
+def _seg_judge_choices(data: ScoreData, ranked: list) -> list:
+    """段级形态闸门要问模型时，把 :func:`_seg_ranked_salience` 的结果摊成
+    :func:`melody_judge.judge_window` 认得的 choices 形状。"""
+    out = []
+    for idx, sc in ranked:
+        p = data.parts[idx] if idx < len(data.parts) else None
+        out.append({
+            'part_index': idx,
+            'part_name': (data.part_names[idx] if idx < len(data.part_names)
+                          else f'Part {idx}'),
+            'salience': float(sc),
+            'is_voice': bool(getattr(p, 'is_voice', False)),
+            'low_register': False,
+            'group': idx,
+            'doubled_with': [],
+        })
+    out.sort(key=lambda c: -c['salience'])
+    return out
+
+
+def _seg_judge_stats(data: ScoreData, ranked: list, s: float, e: float) -> list:
+    """段级候选的极简统计。
+
+    给模型看的数字必须有出处 —— 段级没有窗级的 per_part，全部写成 0 等于
+    让它在一片空白里猜。这里补齐发音数 / 平均音高 / 多音事件占比三项。
+    """
+    rows = []
+    for idx, _sc in ranked[:judge_mod.JUDGE_MAX_PARTS]:
+        seq = _seg_pitch_seq(data, idx, s, e)
+        if not seq:
+            continue
+        rows.append({'part_index': idx, 'note_count': len(seq),
+                     'mean_pitch': round(sum(seq) / len(seq), 1),
+                     'chord_ratio': chord_ratio(data, idx, s, e)})
+    return rows
 
 
 # ---------------------------------------------------------------- 导出
@@ -750,7 +1049,17 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
         # 在听觉上是一条线索，不该让它们互相"竞争"把置信度压成 0。
         doubles = voice_mod.doubling_groups(
             voice_mod.window_signatures(data, m_start, m_end))
-        choices = _window_choices(row, data, low, doubles)
+        # 窗内各声部的音高序列（和弦取最高音）：平线闸与低音区翻盘**共用同一份**。
+        # 两个地方各算一遍就会得到两套结果（与"显著性必须按同一口径现算"是同一
+        # 个道理）—— 一边说它是平线、一边拿它当标尺，是最难查的那种错。
+        seqs = {int(k): _seg_pitch_seq(data, int(k), m_start, m_end)
+                for k in (row.get('scores') or {})}
+        # 多音事件占比：把"柱式和弦伴奏的平线"与"吟诵式旋律的平线"分开的依据，
+        # 与 seqs 同一套口径现算（理由同 seqs）。
+        ratios = {int(k): chord_ratio(data, int(k), m_start, m_end)
+                  for k in (row.get('scores') or {})}
+        choices = _window_choices(row, data, low, doubles, seqs=seqs,
+                                  ratios=ratios)
         # 低音区保护与力度裁决要看窗级的原始字典（substance / dyn）。
         # 必须**按当前密度口径现算**，不能让它在别处按默认口径再算一遍 ——
         # 两条路算出两套 substance，同一个窗会有两种归属。
@@ -764,16 +1073,34 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
             else [{**d, 'dyn': None, 'dyn_support': 0.0} for d in per_part])
         # 低音区保护：整窗上方没有更像旋律的候选时，低音线条恢复竞选资格
         ovr = (low_register_overrides(data, choices, m_start, m_end,
-                                      per_part=dyn_part) if low else {})
+                                      per_part=dyn_part, seqs=seqs,
+                                      ratios=ratios)
+               if low else {})
         best, margin = _pick(choices, voice_priority, ovr, per_part=dyn_part)
         # ---- DeepSeek 兜底裁定（可选）：本地判据咬得太紧时才问 ----
+        # 两种问法（见 melody_judge.build_judge_task）：
+        #   kind='tie'  —— 两条候选显著性咬住，模型给它们重排；
+        #   kind='line' —— **本地判据自己打起来了**："是不是一条线"这道闸把某个
+        #                  候选剔除 / 降级，而它的显著性与当选者咬得很近。这是
+        #                  2026-10-23 加的 —— 平线分得再细也有认缴的地带
+        #                  （旋律性弱的流行歌、民歌收句整句同音），这时候问人比
+        #                  问公式可靠。
+        # 开关关着连 `is_hard` / `line_dispute` 都不查：一次网络请求都不发，
+        # 也不必记一堆空案例。
         judge = None
-        # 开关关着连 `is_hard` 都不查：一次网络请求都不发，也不必记一堆空案例
-        if llm_judge and judge_mod.is_hard(choices, margin):
+        disp = None
+        kind = None
+        if llm_judge and best is not None:
+            if judge_mod.is_hard(choices, margin):
+                kind = 'tie'
+            else:
+                disp = judge_mod.line_dispute(choices, best['part_index'], ovr)
+                kind = 'line' if disp else None
+        if kind:
             local_margin = round(margin, 4)
             judge = judge_mod.judge_window(
                 data, config, w, choices, dyn_part, m_start, m_end,
-                best['part_index'], margin, judge_budget)
+                best['part_index'], margin, judge_budget, dispute=disp)
             if judge.get('applied') and judge.get('pick') != best['part_index']:
                 new = next(c for c in choices
                            if c['part_index'] == judge['pick'])
@@ -786,6 +1113,8 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
                 best = new
             judge_cases.append({
                 'window': w['window'],
+                'kind': judge['kind'],
+                'dispute': judge['dispute_desc'],
                 'start_measure': w['start_measure'],
                 'end_measure': w['end_measure'],
                 'local_part_index': judge['prev'],
@@ -804,6 +1133,8 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
                     'salience': c['salience'],
                     'is_voice': c['is_voice'],
                     'low_register': c['low_register'],
+                    'flat_kind': c.get('flat_kind'),
+                    'chord_ratio': c.get('chord_ratio'),
                     'note_count': next(
                         (d.get('note_count') for d in (dyn_part or [])
                          if int(d.get('part_index', -1)) == c['part_index']),
@@ -827,6 +1158,19 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
             'low_override_shape': ovr.get(best['part_index']) if best else None,
             'margin': margin,
             'salience': best['salience'] if best else 0.0,
+            # 被"是不是一条线"这道闸挡掉的声部（柱式和弦铺底 / 踏板音）。
+            # 写出来是为了让人一眼看出"这段为什么不是音最高的那个在唱"。
+            'flat_excluded': [c['part_name'] for c in choices
+                              if c.get('flat_kind') == 'chord'
+                              and not c.get('is_voice')],
+            # 降级但**没有剥夺资格**的那些（单音同音反复：吟诵 / 弱旋律收句）。
+            # 它们只是排到了后面，没人可选时照样当选。
+            'chant_suspects': [c['part_name'] for c in choices
+                               if c.get('flat_kind') == 'chant'
+                               and not c.get('is_voice')],
+            # 这一窗归的正好是一条同音反复的线：页面上一眼能看出这是"唱出来的
+            # 一条线"而不是"提取失败"。
+            'chant_owner': bool(best and best.get('flat_kind') == 'chant'),
         })
 
     # ---- ② 连续同归属合并为 run ----
@@ -863,11 +1207,47 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
         shape_info = None
         replaced_from = None
         shape_reason = ''
+        shape_llm = None
         if shape_gate:
             ranked = _seg_ranked_salience(
                 win_scores, r['start_measure'], r['end_measure'], owner)
-            owner, shapes, shape_reason = apply_shape_gate(
+            gated, shapes, shape_reason = apply_shape_gate(
                 data, s, e, ranked, owner, shape_min)
+            # 形态层换了人 → 这是本地判据自己的又一次"冒险"（它只说原归属形态
+            # 不合格，没说接替者有多合适）。接替者的显著性比原归属差一大截时，
+            # 这就是一次"两害相权"，交给模型复核一句（2026-10-23 加的第二种
+            # 发问场合，见 melody_judge.shape_dispute）。
+            if gated != owner:
+                sal_map = dict(ranked)
+                disp = (judge_mod.shape_dispute(
+                            gated, sal_map.get(gated), owner,
+                            sal_map.get(owner), len(ranked))
+                        if llm_judge else None)
+                if disp:
+                    seg_choices = _seg_judge_choices(data, ranked)
+                    j = judge_mod.judge_window(
+                        data, config,
+                        {'start_measure': r['start_measure'],
+                         'end_measure': r['end_measure']},
+                        seg_choices, _seg_judge_stats(data, ranked, s, e),
+                        s, e, gated, 0.0, judge_budget, dispute=disp)
+                    shape_llm = {
+                        'called': j['called'], 'applied': j['applied'],
+                        'pick': j['pick'], 'prev': j['prev'],
+                        'reason': j['reason'], 'confidence': j['confidence'],
+                        'kind': j['kind'], 'dispute': j['dispute_desc'],
+                    }
+                    pick = j.get('pick')
+                    if j.get('applied') and pick is not None and pick != gated:
+                        why2 = f'（{j.get("reason") or "未说明理由"}）'
+                        if pick == owner:
+                            shape_reason += f'；模型复核后改回原归属{why2}'
+                        else:
+                            shape_reason += (
+                                f'；模型复核后改判给 '
+                                f'{data.parts[pick].name}{why2}')
+                        gated = pick
+            owner = gated
             shape_info = shapes.get(owner) or {}
             if owner != r['part_index']:
                 replaced_from = r['part_index']
@@ -876,6 +1256,7 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
                     'from': data.parts[r['part_index']].name,
                     'to': data.parts[owner].name,
                     'reason': shape_reason,
+                    'llm': shape_llm,
                 })
         notes = mex.events_in(data.parts[owner], s, e)
         # 主音判定（只在"不保留双音"时做）：这一段每个同时响多个音的事件，
@@ -935,6 +1316,7 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
             'shape': shape_info,
             'shape_replaced_from': replaced_from,
             'shape_reason': shape_reason,
+            'shape_llm': shape_llm,
             # 双音口径写进每段：重导出时不重新判定，沿用这一次跑出来的主音表
             'keep_doubles': keep_doubles,
             'principal': pr_brief,
@@ -962,6 +1344,39 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
         method += ('齐奏加倍（' + '；'.join(
             f'{k} 与 {"、".join(sorted(v))} 同奏同一条旋律' for k, v in doubled.items())
             + '）视为同一条听觉线索，不计入竞争，置信度不因加倍被低估。')
+    # 平线否决：哪些声部是"只在一个音上打点"被挡在竞选之外的。必须写明白 ——
+    # 否则页面上会看到"音最高的那个声部没被选上"，看着像算错了。
+    # 柱式和弦（剥夺资格）与同音反复（只降级）分开说，两件事完全不同。
+    flat_hits, chant_hits = {}, {}
+    for r in win_rows:
+        start = r.get('start_measure')
+        for nm in (r.get('flat_excluded') or []):
+            flat_hits.setdefault(nm, set()).add(start)
+        for nm in (r.get('chant_suspects') or []):
+            chant_hits.setdefault(nm, set()).add(start)
+    if flat_hits or chant_hits:
+        def _m_list(ms):
+            ms = sorted(m for m in ms if isinstance(m, int))
+            if not ms:
+                return ''
+            if len(ms) <= 4:
+                return '、'.join(str(m) for m in ms)
+            return f'{ms[0]}–{ms[-1]} 等 {len(ms)} 个窗'
+    if flat_hits:
+        method += ('平线否决：' + '；'.join(
+            f'{nm}（第 {_m_list(ms)} 小节）' for nm, ms in flat_hits.items())
+            + '在窗内几乎不换音，且**一个起音同时响好几个音**（柱式和弦 / 踏板'
+            '铺底）：显著性里"和弦取最高音"让它音高虚高、动机重复满分，'
+            '形态里音程全 0 让级进比 / 拱形度 / 平滑度三项齐满分，'
+            '两项都是假证据 —— 不参与主旋律竞选。')
+    if chant_hits:
+        method += ('同音反复（保留资格）：' + '；'.join(
+            f'{nm}（第 {_m_list(ms)} 小节）' for nm, ms in chant_hits.items())
+            + '这条线连着许多音都在同一个音高上，但它是**一条单音线条**'
+            '（一个音一个音地唱），很可能是吟诵式旋律 —— 旋律性弱的流行歌、'
+            '民歌的收句常有这种写法（如非洲民歌《巴努瓦》最后一句整句唱 do）。'
+            '它只是排到后面，没有失去资格：没有更像旋律的候选时仍由它演唱，'
+            '与别的候选咬得紧时交给模型裁决。')
     low_names = [data.parts[i].name for i in sorted(low)] if low else []
     # 力度：谱面标没标力度，决定了"听感"这条证据能不能用。把它写进结果，
     # 页面上才能交代清楚 —— 否则用户会以为系统压根没考虑力度。
@@ -1020,6 +1435,17 @@ def melody_line(data: ScoreData, config, piece, voice_out: dict,
         'low_register_names': low_names,
         # 低音区里靠"更像一条旋律"被重新接纳的声部（见 low_register_overrides）
         'low_register_overridden': sorted(overrides),
+        # 被"是不是一条线"挡在竞选之外的声部（见 is_flat_line）：
+        # 柱式和弦 / 踏板铺底 —— 显著性虚高 + 形态假满分，两条证据都是假的
+        'flat_excluded_parts': sorted(flat_hits),
+        'flat_excluded_by_part': {nm: sorted(ms) for nm, ms in flat_hits.items()},
+        # **同音反复但保留资格**的声部（见 flat_kind）：单音线条一段下来都在同一
+        # 个音高上，很可能是吟诵式旋律，只降级不剥夺
+        'chant_suspect_parts': sorted(chant_hits),
+        'chant_suspect_by_part': {nm: sorted(ms) for nm, ms in chant_hits.items()},
+        # 最终真的由一条同音反复的线在唱的窗（这类段要让人一眼看出不是提取失败）
+        'chant_owner_windows': sorted(
+            r.get('start_measure') for r in win_rows if r.get('chant_owner')),
         'dynamics': {
             # 开关（系统设置「主旋律判定考虑力度」，默认开）
             'enabled': dyn_on,

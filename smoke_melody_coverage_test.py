@@ -193,14 +193,21 @@ def main():
 
     # 反证：把低音区排除关掉，贝斯就会抢走主旋律（这就是改之前的行为）
     print('\n[A-反证] 关掉低音区排除 → 贝斯会抢走主旋律')
+    # 这条反证要单独检验"低音区排除"这一道闸的作用。2026-10-22 上线的平线闸
+    # 也会挡住这里的贝斯（它每小节两个二分音符、音高恒为 36 —— 就是一条踏板
+    # 音），所以必须把它一并按住，否则证出来的是"平线闸有用"，不是原意。
+    from core.analysis import melody_line as mlx
     orig = vmod.low_register_parts
+    orig_flat = mlx.is_flat_line
     vmod.low_register_parts = lambda d: set()
+    mlx.is_flat_line = lambda seq: False
     try:
         AnalysisResult.objects.filter(piece=piece, step='melody_line').delete()
         pipeline._run_steps(piece.id, ['melody_line'])
         bad = AnalysisResult.objects.get(piece=piece, step='melody_line').output
     finally:
         vmod.low_register_parts = orig
+        mlx.is_flat_line = orig_flat
     bad_names = {s[2] for s in seg_of(bad)}
     check('不做低音区排除时贝斯确实会入选（说明这一步不能省）',
           'Acoustic Bass' in bad_names, str(seg_of(bad)))
