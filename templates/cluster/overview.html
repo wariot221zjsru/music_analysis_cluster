@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+{% block title %}音乐聚类 · 音乐分析和处理智能体{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>音乐聚类总览</h1>
+  {% if user.is_staff %}
+    <a href="/cluster/admin/" class="btn btn-primary">聚类管理台</a>
+  {% endif %}
+</div>
+
+<p class="muted small">
+  对已上传的<b>公开作品</b>，按<b>调式</b>、<b>和声</b>、<b>旋律</b>三个向量索引
+  各自检索 Top-N，再用倒数排名融合（RRF）合成相似度，最后做层次聚类。
+  同调式不同调高（C 大调 / D 大调）归一为同一类；自然大调、多利亚、立底亚
+  这类<b>音阶相近但调式不同</b>的按音级分布区分开。
+</p>
+
+{% if run %}
+  <p class="muted small">
+    第 {{ run.pk }} 次聚类 · {{ run.created_at|date:'Y-m-d H:i' }} ·
+    {{ run.piece_count }} 首作品分成 {{ run.cluster_count }} 类
+    {% if not run.published %}
+      <span class="tag tag-public">未发布（仅管理员可见）</span>
+    {% endif %}
+  </p>
+
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>类</th><th>成员数</th><th>代表作品</th><th>成员</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cl in clusters %}
+        <tr>
+          <td><b>{{ cl.display_label }}</b></td>
+          <td>{{ cl.size }}</td>
+          <td>
+            {% if cl.medoid %}
+              <a href="/pieces/{{ cl.medoid.id }}/">{{ cl.medoid.title }}</a>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% for m in cl.members.all|slice:':5' %}
+              {% if m.piece %}
+                <a href="/pieces/{{ m.piece.id }}/">{{ m.piece.title }}</a>{% if not forloop.last %}、{% endif %}
+              {% endif %}
+            {% endfor %}
+            {% if cl.size > 5 %}<span class="muted">等 {{ cl.size }} 首</span>{% endif %}
+          </td>
+          <td><a class="btn btn-sm" href="/cluster/c/{{ cl.id }}/">查看 →</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <div class="empty-state">
+    <p>还没有已发布的聚类结果。</p>
+    <p class="muted">
+      {% if user.is_staff %}
+        到「聚类管理台」先重建特征，再执行聚类并发布。
+      {% else %}
+        管理员尚未发布聚类结果。
+      {% endif %}
+    </p>
+  </div>
+{% endif %}
+{% endblock %}

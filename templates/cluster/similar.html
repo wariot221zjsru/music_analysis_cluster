@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+{% block title %}相似作品 · {{ piece.title }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>相似作品 · {{ piece.title }}</h1>
+  <a class="btn btn-sm" href="/pieces/{{ piece.id }}/">← 返回作品详情</a>
+</div>
+
+<p class="muted small">
+  调式、和声、旋律三个索引各检索 Top-{{ setting.top_n }}，
+  用倒数排名融合（RRF，k={{ setting.rrf_k }}）合成下面的排序。
+  权重：调式 {{ setting.w_mode }} / 和声 {{ setting.w_harmony }} / 旋律 {{ setting.w_melody }}。
+</p>
+
+{% if target %}
+<p class="muted small">
+  本曲特征：
+  主调 {% if target.mode_key %}{{ target.mode_key }}{% else %}<span class="muted">未定</span>{% endif %}
+  {% if target.mode_uncertain %}
+    <span class="tag">主音未定（调式轴降级为循环移位比对）</span>
+  {% endif %}
+  · 和弦窗口 {{ target.harmony_chord_count|default:'—' }}
+  · 旋律乐句 {{ target.melody_phrase_count }} 个 / {{ target.melody_note_count }} 音
+  · 就绪轴 {{ target.axes_ready|join:'、' }}
+</p>
+{% endif %}
+
+{% if err %}
+  <div class="empty-state"><p>{{ err }}</p></div>
+{% elif results %}
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>#</th><th>作品</th><th>融合分</th>
+        <th>调式</th><th>和声</th><th>旋律</th><th>各轴排名</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in results %}
+      <tr>
+        <td>{{ forloop.counter }}</td>
+        <td><a href="/pieces/{{ r.piece.id }}/">{{ r.piece.title }}</a></td>
+        <td><b>{{ r.rrf|floatformat:4 }}</b></td>
+        <td>{{ r.mode_sim|default:'—' }}</td>
+        <td>{{ r.harmony_sim|default:'—' }}</td>
+        <td>{{ r.melody_sim|default:'—' }}</td>
+        <td class="muted small">
+          {% for axis, info in r.axes.items %}
+            {{ axis }}#{{ info.rank }}{% if not forloop.last %} · {% endif %}
+          {% endfor %}
+        </td>
+        <td><a class="btn btn-sm" href="/cluster/piece/{{ r.piece.id }}/">相似 →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="muted small">
+  「各轴排名」是该作品在三个索引各自的 Top-N 里排第几；没进某一轴的 Top-N
+  就不从该轴拿分（RRF 的语义：各轴只在自己的候选里投票）。
+</p>
+{% else %}
+  <div class="empty-state"><p>没有找到相似作品。</p></div>
+{% endif %}
+{% endblock %}

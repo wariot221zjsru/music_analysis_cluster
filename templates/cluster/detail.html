@@ -1,0 +1,60 @@
+{% extends 'base.html' %}
+{% block title %}{{ cluster.display_label }} · 音乐聚类{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ cluster.display_label }}</h1>
+  <a class="btn btn-sm" href="/cluster/">← 返回聚类总览</a>
+</div>
+
+<p class="muted small">
+  第 {{ cluster.run.pk }} 次聚类 · 第 {{ cluster.index }} 类 ·
+  共 {{ cluster.size }} 首
+  {% if cluster.auto_label %}
+    <br>自动标签：{{ cluster.auto_label }}
+  {% endif %}
+  {% if cluster.medoid %}
+    <br>代表作品：<a href="/pieces/{{ cluster.medoid.id }}/">{{ cluster.medoid.title }}</a>
+  {% endif %}
+</p>
+
+{% if user.is_staff %}
+<form method="post" action="/cluster/admin/rename/{{ cluster.id }}/" class="inline">
+  {% csrf_token %}
+  <input type="text" name="label" value="{{ cluster.label }}" placeholder="留空则用自动标签" maxlength="120">
+  <button type="submit" class="btn btn-sm">保存类名</button>
+</form>
+{% endif %}
+
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>作品</th><th>调式相似</th><th>和声相似</th><th>旋律相似</th>
+        <th>到代表距离</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in cluster.members.all %}
+      <tr>
+        <td>
+          <a href="/pieces/{{ m.piece.id }}/">{{ m.piece.title }}</a>
+          {% if m.piece_id == cluster.medoid_id %}
+            <span class="tag tag-public">代表</span>
+          {% endif %}
+        </td>
+        <td>{{ m.mode_sim|default:'—' }}</td>
+        <td>{{ m.harmony_sim|default:'—' }}</td>
+        <td>{{ m.melody_sim|default:'—' }}</td>
+        <td>{{ m.dist_to_medoid }}</td>
+        <td><a class="btn btn-sm" href="/cluster/piece/{{ m.piece.id }}/">相似作品 →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="muted small">
+  三轴相似度是与<b>本类代表作品</b>直接比对的结果（0–1，越大越像）；
+  某一轴为空表示这首作品缺少该轴特征。
+</p>
+{% endblock %}

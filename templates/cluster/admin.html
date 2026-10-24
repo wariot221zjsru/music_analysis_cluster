@@ -1,0 +1,130 @@
+{% extends 'base.html' %}
+{% block title %}聚类管理台 · 音乐聚类{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>聚类管理台</h1>
+  <a class="btn btn-sm" href="/cluster/">← 返回聚类总览</a>
+</div>
+
+<p class="muted small">
+  只对<b>已公开</b>的作品建索引。流程：① 重建特征 → ② 执行聚类 → ③ 发布
+  → ④ 觉得类太粗/太碎就调阈值重跑。
+</p>
+
+<h2>1 · 特征与聚类</h2>
+<p class="muted small">
+  公开作品 {{ public_pieces }} 首，其中特征完整 {{ vectors_done }} 首。
+  重建特征每次处理 {{ batch }} 首（解析乐谱较慢，作品多就多点几次）。
+</p>
+<form method="post" action="/cluster/admin/rebuild/" class="inline">
+  {% csrf_token %}
+  <button type="submit" class="btn btn-primary">① 重建特征</button>
+</form>
+<form method="post" action="/cluster/admin/run/" class="inline">
+  {% csrf_token %}
+  <button type="submit" class="btn btn-primary">② 执行聚类</button>
+</form>
+
+<h2>2 · 参数</h2>
+<form method="post" action="/cluster/admin/settings/">
+  {% csrf_token %}
+  <div class="table-wrap">
+    <table class="table">
+      <tbody>
+        <tr>
+          <th>三轴权重</th>
+          <td>
+            调式 <input type="number" step="0.05" name="w_mode" value="{{ setting.w_mode }}" size="4">
+            和声 <input type="number" step="0.05" name="w_harmony" value="{{ setting.w_harmony }}" size="4">
+            旋律 <input type="number" step="0.05" name="w_melody" value="{{ setting.w_melody }}" size="4">
+          </td>
+        </tr>
+        <tr>
+          <th>各轴 Top-N</th>
+          <td><input type="number" name="top_n" value="{{ setting.top_n }}" size="4">
+            <span class="muted small">每个索引各取前几名参与融合</span></td>
+        </tr>
+        <tr>
+          <th>RRF 常数 k</th>
+          <td><input type="number" name="rrf_k" value="{{ setting.rrf_k }}" size="4">
+            <span class="muted small">越大 → 排名靠前的优势越小（默认 60）</span></td>
+        </tr>
+        <tr>
+          <th>旋律乐句粗排</th>
+          <td><input type="number" name="phrase_top_m" value="{{ setting.phrase_top_m }}" size="4">
+            <span class="muted small">每个乐句先取几条候选再做乐句级精排</span></td>
+        </tr>
+        <tr>
+          <th>旋律曲级聚合</th>
+          <td>
+            <select name="melody_agg">
+              <option value="max" {% if setting.melody_agg == 'max' %}selected{% endif %}>最相似乐句对（max）</option>
+              <option value="mean_max" {% if setting.melody_agg == 'mean_max' %}selected{% endif %}>各乐句最佳匹配均值（更稳）</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <th>聚类切分阈值</th>
+          <td><input type="number" step="0.05" name="cluster_threshold" value="{{ setting.cluster_threshold }}" size="4">
+            <span class="muted small">调小 → 类更多更碎；调大 → 类更少更粗</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <button type="submit" class="btn btn-primary">保存参数</button>
+</form>
+
+<h2>3 · 历史运行</h2>
+{% if runs %}
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>#</th><th>时间</th><th>状态</th><th>作品</th><th>类数</th>
+        <th>发布</th><th>执行人</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td>{{ run.pk }}</td>
+        <td>{{ run.created_at|date:'m-d H:i' }}</td>
+        <td>
+          {% if run.status == 'done' %}
+            <span class="tag tag-public">完成</span>
+          {% elif run.status == 'error' %}
+            <span class="tag">失败</span>
+          {% else %}
+            {{ run.get_status_display }}
+          {% endif %}
+        </td>
+        <td>{{ run.piece_count }}</td>
+        <td>{{ run.cluster_count }}</td>
+        <td>
+          {% if run.published %}
+            <span class="tag tag-public">已发布</span>
+          {% else %}
+            <span class="tag">未发布</span>
+          {% endif %}
+        </td>
+        <td class="muted">{{ run.created_by.username|default:'—' }}</td>
+        <td>
+          {% if run.status == 'done' %}
+          <form method="post" action="/cluster/admin/publish/{{ run.pk }}/" class="inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm">
+              {{ run.published|yesno:'撤回,发布' }}
+            </button>
+          </form>
+          {% endif %}
+          {% if run.error %}<span class="muted small">{{ run.error }}</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+  <div class="empty-state"><p>还没有聚类运行记录。</p></div>
+{% endif %}
+{% endblock %}

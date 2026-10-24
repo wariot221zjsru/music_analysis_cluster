@@ -217,7 +217,7 @@ def transcribe_instrumental(
     实现参见模块 docstring【纯器乐】一节。
     """
     #判断是否m4a#2026.10.23#
-    if os.path.splitext(audio_path).lower() == '.m4a':
+    if audio_path.suffix.lower() == '.m4a':#
         audio_path = to_wav(audio_path)
 
     rslt = pyscriptor_transcribe_and_postprocess(audio_path, output_midi_path)
@@ -245,7 +245,8 @@ def transcribe_instrumental_with_voice(
 ) -> TranscriptionResult:
     
     #判断是否m4a#2026.10.23#
-    if os.path.splitext(audio_path).lower() == '.m4a':
+    #用 pathlib.Path.suffix 就能直接拿到扩展名
+    if audio_path.suffix.lower() == '.m4a':
         audio_path = to_wav(audio_path)
     
     """器乐 + 人声音频 → MIDI（两遍转录再合并）。
