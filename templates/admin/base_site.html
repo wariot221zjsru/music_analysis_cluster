@@ -1,0 +1,15 @@
+{# 覆写 Django 内置后台的站点头：在标题右侧常驻「聚类管理」入口。
+   inherit 'admin/base_site.html' 会由模板加载器回落到 django.contrib.admin 的原文件。 #}
+{% extends 'admin/base_site.html' %}
+
+{% block branding %}
+  {{ block.super }}
+  <div id="cluster-admin-entry" style="display:inline-block;vertical-align:middle;
+       padding:6px 12px;background:#417505;color:#fff;border-radius:6px;
+       font-size:14px;margin:6px 0 6px 0;">
+    <a href="/cluster/" style="color:#d7f2cf;text-decoration:none;">聚类总览</a>
+    <span style="opacity:.55;margin:0 6px;">|</span>
+    <a href="/cluster/admin/" style="color:#fff;text-decoration:none;font-weight:600;">
+      聚类管理 →</a>
+  </div>
+{% endblock %}

@@ -2,7 +2,7 @@
 
 ## 三个索引
 
-  调式 mode     一曲一向量（12 维，已按主音对齐）→ 直接余弦，**不循环移位**
+  调式 mode     一曲一向量（12 维，已按主音对齐）→ 余弦，**不循环移位**
   和声 harmony  一曲一向量（12 维）→ 余弦
   旋律 melody   **乐句级**：一乐句一条向量，粗排命中后再做乐句级精排
 
@@ -19,15 +19,57 @@
 
 直接全比对是 |A|×|B| 对乐句，粗排把它压到每首候选曲最多 M 对。
 
-## 后端
+## 后端：纯 Python（默认）+ pgvector（可选加速）
 
-纯 Python 暴力余弦。几百首曲子、几千条乐句向量，毫秒级；不引入任何新依赖。
-``VectorIndex`` 是抽象基类，日后要换 pgvector / FAISS 只需再实现一个子类，
-上层（检索、RRF、聚类）一行都不用改。
+**权威数据是 PieceVector 的 JSON 字段**，任何环境都能跑，纯 Python 暴力余弦
+（几百首、几千条乐句向量，毫秒级，零新依赖）。
+
+若 PostgreSQL 装了 pgvector 扩展且加速表存在（见 0002 迁移），下面的
+``mode`` / ``harmony`` 轴检索与 ``melody`` 粗排会自动改走原生 ``<=>`` 余弦查询
+（走 IVFFlat 索引），不再在 Python 里循环。用不了的场景自动回退：
+
+  * 数据库不是 PostgreSQL / 没装 vector 扩展 / 加速表没建
+  * 调式轴 ``uncertain=True``（主音没定，需要"循环移位取最大"，
+    pgvector 的 <=> 只能比固定向量，做不了移位 → 必须回退）
+
+``VectorIndex`` 是抽象基类，上层（检索、RRF、聚类）接口完全不变 ——
+换后端只需动本文件。
 """
 from . import features
 
 AXES = ('mode', 'harmony', 'melody')
+
+# pgvector 加速表（由 0002 迁移在检测到扩展时创建）
+PG_PIECE_TABLE = 'cluster_pgvec_piece'
+PG_PHRASE_TABLE = 'cluster_pgvec_phrase'
+
+_PG_OK = None
+
+
+# ---------------------------------------------------------------- pgvector 探测
+
+def pg_available() -> bool:
+    """PostgreSQL + pgvector 扩展 + 加速表是否可用（结果缓存，只查一次）。"""
+    global _PG_OK
+    if _PG_OK is None:
+        _PG_OK = False
+        try:
+            from django.db import connection
+            with connection.cursor() as c:
+                c.execute("SELECT 1 FROM pg_extension WHERE extname='vector'")
+                if c.fetchone() is None:
+                    return False
+                c.execute('SELECT to_regclass(%s)', [PG_PIECE_TABLE])
+                row = c.fetchone()
+                _PG_OK = bool(row and row[0])
+        except Exception:
+            _PG_OK = False
+    return _PG_OK
+
+
+def _fmt_vec(vec) -> str:
+    """Python 列表 → pgvector 字面量 '[x,y,z]'。"""
+    return '[' + ','.join(f'{float(x):.6f}' for x in vec) + ']'
 
 
 def cosine(a, b) -> float:
@@ -35,10 +77,14 @@ def cosine(a, b) -> float:
     return features._cosine(a, b)
 
 
+# ---------------------------------------------------------------- 单向量轴
+
 class VectorIndex:
-    """单向量轴：一曲一向量，余弦检索（暴力）。"""
+    """单向量轴：一曲一向量，余弦检索。可用 pgvector 时自动走 SQL。"""
 
     axis = 'generic'
+    # pgvector 加速表里的列名（mode/harmony 子类覆盖）
+    pg_col = None
 
     def __init__(self):
         self.pids = []
@@ -67,8 +113,43 @@ class VectorIndex:
             return features._pc_cos_max_shift(vec, other)
         return cosine(vec, other)
 
+    # ---- pgvector 路径 ----
+
+    def _pg_query(self, vec, top_n: int, exclude=None):
+        """用原生 <=> 查 Top-N（余弦距离 → 相似度 1 - dist）。"""
+        from django.db import connection
+
+        col = self.pg_col
+        head = [f'SELECT piece_id, 1 - ({col} <=> %s::vector) AS sim']
+        where = [f'FROM {PG_PIECE_TABLE}', f'WHERE {col} IS NOT NULL']
+        params = [_fmt_vec(vec)]
+        if exclude is not None:
+            where.append('AND piece_id != %s')
+            params.append(exclude)
+        tail = [f'ORDER BY {col} <=> %s::vector', 'LIMIT %s']
+        params += [_fmt_vec(vec), int(top_n)]
+        sql = ' '.join(head + where + tail)
+        with connection.cursor() as c:
+            c.execute(sql, params)
+            return [(r[0], round(float(r[1]), 4)) for r in c.fetchall()]
+
+    # ---- 对外查询 ----
+
     def query(self, vec, top_n: int, exclude=None, uncertain: bool = False):
-        """检索 Top-N。返回 [(piece_id, score)] 降序。"""
+        """检索 Top-N。返回 [(piece_id, score)] 降序。
+
+        pgvector 走不通（或调式轴需要循环移位）时自动回退纯 Python，
+        两条路径结果一致（都是余弦，只是 pg 那边由索引近似加速）。
+        """
+        if not vec:
+            return []
+        # 主音不确定 → 需要循环移位，pgvector 的 <=> 做不到，只能回退
+        shift = self.axis == 'mode' and bool(uncertain)
+        if pg_available() and not shift and self.pg_col:
+            try:
+                return self._pg_query(vec, top_n, exclude)
+            except Exception:
+                pass  # 任何 pg 层异常都静默回退，保证功能可用
         out = []
         for pid, v, flag in zip(self.pids, self.vecs, self.uncertain):
             if exclude is not None and pid == exclude:
@@ -81,14 +162,18 @@ class VectorIndex:
 
 class ModeIndex(VectorIndex):
     axis = 'mode'
+    pg_col = 'mode_vec'
 
 
 class HarmonyIndex(VectorIndex):
     axis = 'harmony'
+    pg_col = 'harmony_vec'
 
+
+# ---------------------------------------------------------------- 旋律轴
 
 class MelodyIndex:
-    """旋律轴：乐句级索引（一乐句一条）。"""
+    """旋律轴：乐句级索引（一乐句一条）。粗排可用 pgvector。"""
 
     axis = 'melody'
 
@@ -106,19 +191,35 @@ class MelodyIndex:
     def __len__(self):
         return len(self.pids)
 
-    def query(self, target_phrases, top_n: int, exclude=None,
-              phrase_top_m: int = 10, agg: str = 'max'):
-        """旋律轴检索。
+    def _pg_coarse(self, target_phrases, exclude, phrase_top_m):
+        """粗排：每个目标乐句用 pgvector 取 Top-M。返回 cand 字典。"""
+        from django.db import connection
 
-        ``target_phrases`` 是查询曲的乐句指纹列表。返回 [(piece_id, score)] 降序，
-        score 是**精排后**的乐句级相似度（theme.compare 的 score）。
-        """
-        if not target_phrases:
-            return []
-        from core.analysis import theme as theme_mod
+        cand = {}
+        with connection.cursor() as c:
+            for tf in target_phrases:
+                tvec = tf.get('vec')
+                if not tvec:
+                    continue
+                qv = _fmt_vec(tvec)
+                params = [qv]
+                excl_sql = ''
+                if exclude is not None:
+                    excl_sql = ' AND piece_id != %s'
+                    params.append(exclude)
+                sql = (f'SELECT piece_id, payload, 1 - (vec <=> %s::vector) AS sim '
+                       f'FROM {PG_PHRASE_TABLE} WHERE vec IS NOT NULL{excl_sql} '
+                       f'ORDER BY vec <=> %s::vector LIMIT %s')
+                params += [qv, int(phrase_top_m)]
+                c.execute(sql, params)
+                for piece_id, payload, _sim in c.fetchall():
+                    cf = dict(payload) if payload else {}
+                    slot = cand.setdefault(piece_id, {'pairs': []})
+                    slot['pairs'].append((tf, cf))
+        return cand
 
-        # ---- 粗排：每个目标乐句，在全库乐句上取 Top-M ----
-        # cand[pid] = {'best': 粗排最高分, 'pairs': [(目标乐句, 候选乐句), ...]}
+    def _coarse(self, target_phrases, exclude, phrase_top_m):
+        """粗排（纯 Python）：每个目标乐句在全库乐句上取 Top-M。"""
         cand = {}
         for tf in target_phrases:
             tvec = tf.get('vec')
@@ -128,34 +229,58 @@ class MelodyIndex:
             for pid, cf in zip(self.pids, self.fps):
                 if exclude is not None and pid == exclude:
                     continue
-                sc = cosine(tvec, cf.get('vec'))
-                hits.append((sc, pid, cf))
+                hits.append((cosine(tvec, cf.get('vec')), pid, cf))
             hits.sort(key=lambda x: (-x[0], x[1]))
-            for sc, pid, cf in hits[:phrase_top_m]:
-                slot = cand.setdefault(pid, {'best': 0.0, 'pairs': []})
-                slot['best'] = max(slot['best'], sc)
+            for _sc, pid, cf in hits[:phrase_top_m]:
+                slot = cand.setdefault(pid, {'pairs': []})
                 slot['pairs'].append((tf, cf))
+        return cand
 
-        # ---- 精排：在粗排命中的乐句对上跑完整 compare，取最大 / 均值 ----
+    @staticmethod
+    def _fine(cand, agg: str):
+        """精排：在粗排命中的乐句对上跑 theme.compare，取最大 / 各乐句均值。"""
+        from core.analysis import theme as theme_mod
+
         out = []
         for pid, slot in cand.items():
+            results = [(tf, cf, theme_mod.compare(tf, cf)['score'])
+                       for tf, cf in slot['pairs']]
             if agg == 'mean_max':
                 # 每个目标乐句各自找最佳匹配，再取均值（更稳，抗偶然相似）
                 per_target = {}
-                for tf, cf in slot['pairs']:
-                    sc = theme_mod.compare(tf, cf)['score']
+                for tf, _cf, sc in results:
                     key = id(tf)
                     if sc > per_target.get(key, -1.0):
                         per_target[key] = sc
                 scores = list(per_target.values())
                 final = sum(scores) / len(scores) if scores else 0.0
             else:
-                final = max((theme_mod.compare(tf, cf)['score']
-                             for tf, cf in slot['pairs']), default=0.0)
+                final = max((sc for _tf, _cf, sc in results), default=0.0)
             out.append((pid, round(final, 4)))
         out.sort(key=lambda kv: (-kv[1], kv[0]))
-        return out[:top_n]
+        return out
 
+    def query(self, target_phrases, top_n: int, exclude=None,
+              phrase_top_m: int = 10, agg: str = 'max'):
+        """旋律轴检索。
+
+        ``target_phrases`` 是查询曲的乐句指纹列表。返回 [(piece_id, score)] 降序，
+        score 是**精排后**的乐句级相似度（theme.compare 的 score）。
+        """
+        if not target_phrases:
+            return []
+        cand = None
+        if pg_available():
+            try:
+                cand = self._pg_coarse(target_phrases, exclude, phrase_top_m)
+            except Exception:
+                cand = None  # 静默回退
+        if cand is None:
+            cand = self._coarse(target_phrases, exclude, phrase_top_m)
+        return self._fine(cand, agg)[:top_n]
+
+
+# ---------------------------------------------------------------- 打包
 
 class IndexBundle:
     """三个索引打包，建一次、查多次。"""
@@ -215,6 +340,8 @@ class IndexBundle:
         return fuse(ranks, setting)
 
 
+# ---------------------------------------------------------------- RRF 融合
+
 def fuse(ranks: dict, setting) -> list:
     """倒数排名融合（RRF）。
 
@@ -252,3 +379,59 @@ def fuse(ranks: dict, setting) -> list:
         })
     out.sort(key=lambda d: (-d['rrf'], d['piece_id']))
     return out
+
+
+# ---------------------------------------------------------------- pgvector 同步
+
+def sync_pg(vec_row):
+    """把一首作品的三个轴写进 pgvector 加速表（无 pg 环境则什么也不做）。
+
+    在 clustering.refresh_vector 里调用。加速表是**纯缓存**：
+    JSON 字段才是权威数据，这里失败不影响聚类 / 检索正确性。
+    """
+    if not pg_available():
+        return
+    from django.db import connection
+    from psycopg.types.json import Json
+
+    pid = vec_row.piece_id
+    try:
+        with connection.cursor() as c:
+            c.execute(
+                f'INSERT INTO {PG_PIECE_TABLE} '
+                '(piece_id, mode_vec, harmony_vec, updated_at) '
+                'VALUES (%s, %s::vector, %s::vector, now()) '
+                'ON CONFLICT (piece_id) DO UPDATE SET '
+                'mode_vec = EXCLUDED.mode_vec, '
+                'harmony_vec = EXCLUDED.harmony_vec, updated_at = now()',
+                [pid,
+                 _fmt_vec(vec_row.mode_vec) if vec_row.mode_vec else None,
+                 _fmt_vec(vec_row.harmony_vec) if vec_row.harmony_vec else None])
+
+            c.execute(f'DELETE FROM {PG_PHRASE_TABLE} WHERE piece_id = %s', [pid])
+            rows = []
+            for no, fp in enumerate(vec_row.melody_phrases or []):
+                v = fp.get('vec')
+                if not v:
+                    continue
+                rows.append((pid, no, _fmt_vec(v), Json(fp)))
+            if rows:
+                c.executemany(
+                    f'INSERT INTO {PG_PHRASE_TABLE} '
+                    '(piece_id, phrase_no, vec, payload) '
+                    'VALUES (%s, %s, %s::vector, %s)', rows)
+    except Exception:
+        pass  # 加速表不可用时静默降级，主流程照走
+
+
+def drop_pg(piece_id):
+    """删除某首作品的加速表行（作品删除 / 特征清空时用）。"""
+    if not pg_available():
+        return
+    from django.db import connection
+    try:
+        with connection.cursor() as c:
+            c.execute(f'DELETE FROM {PG_PIECE_TABLE} WHERE piece_id = %s', [piece_id])
+            c.execute(f'DELETE FROM {PG_PHRASE_TABLE} WHERE piece_id = %s', [piece_id])
+    except Exception:
+        pass

@@ -138,7 +138,7 @@ def admin_rebuild(request):
     left = max(qs.count() - len(todo), 0)
     messages.success(request, f'特征重建完成：成功 {ok} 首、失败 {fail} 首'
                               + (f'，还剩 {left} 首可继续' if left else ''))
-    return redirect('cluster_admin')
+    return redirect('cluster:cluster_admin')
 
 
 @_staff_required
@@ -153,7 +153,7 @@ def admin_run(request):
                      f'记得"发布"后普通用户才能看到')
     else:
         messages.error(request, f'聚类失败：{run.error}')
-    return redirect('cluster_admin')
+    return redirect('cluster:cluster_admin')
 
 
 @_staff_required
@@ -164,7 +164,7 @@ def admin_publish(request, run_id):
     run.published = not run.published
     run.save(update_fields=['published'])
     messages.success(request, f'已{"发布" if run.published else "撤回"}第 {run.pk} 次聚类')
-    return redirect('cluster_admin')
+    return redirect('cluster:cluster_admin')
 
 
 @_staff_required
@@ -175,7 +175,7 @@ def admin_rename(request, cluster_id):
     cl.label = (request.POST.get('label') or '').strip()[:120]
     cl.save(update_fields=['label'])
     messages.success(request, f'已把第 {cl.index} 类改名为「{cl.display_label}」')
-    return redirect('cluster_detail', cluster_id=cl.id)
+    return redirect('cluster:cluster_detail', cluster_id=cl.id)
 
 
 @_staff_required
@@ -210,4 +210,4 @@ def admin_settings(request):
     s.cluster_threshold = _f('cluster_threshold', s.cluster_threshold, 0.01, 1.0)
     s.save()
     messages.success(request, '聚类参数已保存（下次"执行聚类"生效）')
-    return redirect('cluster_admin')
+    return redirect('cluster:cluster_admin')

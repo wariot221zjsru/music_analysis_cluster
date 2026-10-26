@@ -22,6 +22,13 @@ core 回答"这一首曲子是什么"（调性 / 和弦 / 主旋律线…）；�
   自然大调 / 多利亚 / 立底亚   对齐后向量不同 → 能分开（真正的调式差异）
 
 一次对齐同时满足"不同调高归一"与"不同调式要能区分"这两条要求。
+
+pgvector 加速层（可选）
+----------------------
+三轴向量**主存储仍是 JSONField**（PieceVector），保证任何环境都能跑。
+若 PostgreSQL 装了 pgvector 扩展，index.py 会额外维护三张 raw-SQL 加速表
+（见 index.py 的 PgBackend 与 0002 迁移）：查询走原生 <=>（余弦距离），
+检测不到扩展则自动回退纯 Python 暴力检索，功能一致、结果一致。
 """
 from django.conf import settings
 from django.db import models

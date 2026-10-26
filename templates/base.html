@@ -14,7 +14,9 @@
     <div class="nav-links">
       <a href="/">作品列表</a>
       <a href="/upload/">上传作品</a>
+      <a href="/cluster/">音乐聚类</a>
       {% if user.is_staff %}
+        <a href="/cluster/admin/" class="staff-link-hot">聚类管理</a>
         <a href="/settings/" class="staff-link">系统设置</a>
         <a href="/admin/" class="staff-link">后台管理</a>
       {% endif %}

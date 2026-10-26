@@ -23,7 +23,7 @@ from core.analysis import theme as theme_mod
 from core.models import Piece
 
 from . import features
-from .index import AXES, IndexBundle, cosine
+from .index import AXES, IndexBundle, cosine, sync_pg
 from .models import Cluster, ClusterMember, ClusterRun, ClusterSetting, PieceVector
 
 # 乐句级精排时每首曲子最多参与几个乐句（防止长曲子把比对量拖爆）
@@ -329,6 +329,9 @@ def refresh_vector(piece: Piece) -> PieceVector:
         vec.status = PieceVector.Status.PARTIAL
     vec.error = feats['error'][:500]
     vec.save()
+    # 同步 pgvector 加速表（可选层：没装 pgvector 时内部自动 no-op，
+    # 失败也不影响聚类 / 检索 —— JSON 字段才是权威数据）
+    sync_pg(vec)
     return vec
 
 

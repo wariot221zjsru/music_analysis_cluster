@@ -86,6 +86,11 @@ DATABASES = {
         'PASSWORD': _env('DB_PASSWORD', 'music_agent'),
         'HOST': _env('DB_HOST', 'localhost'),
         'PORT': _env('DB_PORT', '5432'),
+        'OPTIONS': {
+            # pgvector 的 HNSW 是近似索引：ef_search 调高到 100，
+            # 在曲库量级（几十~几千条）上召回与精确余弦一致。
+            'options': '-c hnsw.ef_search=100',
+        },
     }
 }
 

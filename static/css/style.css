@@ -45,6 +45,12 @@ body {
 .nav-links a { color: rgba(255,255,255,.88); text-decoration: none; font-size: 14px; }
 .nav-links a:hover { color: #fff; }
 .nav-links a.staff-link { background: rgba(255,255,255,.15); padding: 4px 10px; border-radius: 6px; }
+/* 聚类管理：管理员高频入口，给实心绿底突出显示 */
+.nav-links a.staff-link-hot {
+  background: #417505; color: #fff; font-weight: 600;
+  padding: 4px 12px; border-radius: 6px;
+}
+.nav-links a.staff-link-hot:hover { background: #48910a; color: #fff; }
 .user-badge { font-size: 13px; color: rgba(255,255,255,.92); }
 .user-badge small { opacity: .75; margin-left: 4px; }
 .inline { display: inline; }
