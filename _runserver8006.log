@@ -1,0 +1,7 @@
+Watching for file changes with StatReloader
+[27/Oct/2026 11:05:49] "GET /cluster/history/ HTTP/1.1" 302 0
+[27/Oct/2026 11:05:49] "GET /accounts/login/?next=/cluster/history/ HTTP/1.1" 200 2098
+[27/Oct/2026 11:06:36] "HEAD /cluster/history/ HTTP/1.1" 302 0
+[27/Oct/2026 11:06:36] "GET /cluster/history/ HTTP/1.1" 302 0
+[27/Oct/2026 11:06:36] "GET /accounts/login/?next=/cluster/history/ HTTP/1.1" 200 2098
+[27/Oct/2026 11:06:36] "GET /static/css/style.css HTTP/1.1" 200 17290
