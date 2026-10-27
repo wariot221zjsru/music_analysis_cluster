@@ -9,6 +9,14 @@
     <span class="tag" title="{{ voice_note }}">{{ piece.contains_voice|yesno:'含人声,纯器乐' }}</span>
     <span class="tag {% if piece.is_public %}tag-public{% endif %}">
       {{ piece.visibility_display }}
+      {% if can_edit %}
+        <form method="post" action="{% url 'core:toggle_visibility' piece.id %}" class="inline visibility-form">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-ghost btn-sm" title="切换公开状态">
+            {% if piece.is_public %}私有{% else %}公开{% endif %}
+          </button>
+        </form>
+      {% endif %}
     </span>
     {% if piece.musicxml_file %}
       <a class="tag tag-link" href="{% url 'core:download_musicxml' piece.id %}" download>MusicXML ⬇</a>
