@@ -3,6 +3,7 @@
 {% block content %}
 <div class="page-head">
   <h1>聚类管理台</h1>
+  <a class="btn btn-sm" href="/cluster/history/">聚类历史记录（含参数留档）</a>
   <a class="btn btn-sm" href="/cluster/">← 返回聚类总览</a>
 </div>
 
@@ -73,6 +74,11 @@
   </div>
   <button type="submit" class="btn btn-primary">保存参数</button>
 </form>
+<p class="muted small">
+  每次保存都会生成一条<b>参数设置记录</b>（含操作人与时间），
+  在「聚类历史记录」页对所有用户可见；每次聚类运行也会把当时的参数
+  快照存进该次运行记录，改参数不会影响历史结果。
+</p>
 
 <h2>3 · 历史运行</h2>
 {% if runs %}
@@ -110,6 +116,7 @@
         <td class="muted">{{ run.created_by.username|default:'—' }}</td>
         <td>
           {% if run.status == 'done' %}
+          <a class="btn btn-sm" href="/cluster/run/{{ run.pk }}/">查看结果</a>
           <form method="post" action="/cluster/admin/publish/{{ run.pk }}/" class="inline">
             {% csrf_token %}
             <button type="submit" class="btn btn-sm">

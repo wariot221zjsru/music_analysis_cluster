@@ -6,6 +6,7 @@
 """
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, user_passes_test
+from django.db.models import Count
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
@@ -14,7 +15,8 @@ from core.models import Piece
 
 from .clustering import refresh_vector, run_clustering
 from .index import IndexBundle
-from .models import Cluster, ClusterMember, ClusterRun, ClusterSetting, PieceVector
+from .models import (Cluster, ClusterMember, ClusterRun, ClusterSetting,
+                     ClusterSettingLog, PieceVector)
 
 # 一次"重建特征"最多处理多少首（解析乐谱较慢，分批避免请求挂太久）
 REBUILD_BATCH = 50
@@ -59,6 +61,49 @@ def overview(request):
     return render(request, 'cluster/overview.html', {
         'run': run, 'clusters': clusters,
         'vector_count': PieceVector.objects.filter(piece__is_public=True).count(),
+    })
+
+
+@login_required
+def history(request):
+    """历史聚类记录：所有已发布结果 + 每次参数保存记录（全员可见）。
+
+    普通用户只看得到已发布的运行；管理员额外能看到未发布的（标注区分）。
+    """
+    if request.user.is_staff:
+        runs = (ClusterRun.objects.filter(status=ClusterRun.Status.DONE)
+                .select_related('created_by'))
+    else:
+        runs = (ClusterRun.objects.filter(status=ClusterRun.Status.DONE,
+                                          published=True)
+                .select_related('created_by'))
+    runs = list(runs)
+    cluster_counts = {
+        c['run']: c['n'] for c in Cluster.objects.filter(
+            run__in=[r.pk for r in runs]).values('run').annotate(
+                n=Count('pk')) if c['run']}
+    for r in runs:
+        r.cluster_num = cluster_counts.get(r.pk, 0)
+    logs = ClusterSettingLog.objects.select_related('created_by')[:50]
+    return render(request, 'cluster/history.html', {
+        'runs': runs, 'setting_logs': logs,
+    })
+
+
+@login_required
+def run_detail(request, run_id):
+    """某一次聚类的完整结果 + 参数快照（已发布对全员可见）。"""
+    run = get_object_or_404(
+        ClusterRun.objects.select_related('created_by'), pk=run_id)
+    if run.status != ClusterRun.Status.DONE:
+        raise Http404('该次聚类未成功完成')
+    if not run.published and not request.user.is_staff:
+        raise Http404('该聚类结果尚未发布')
+    clusters = (Cluster.objects.filter(run=run)
+                .prefetch_related('members__piece')
+                .select_related('medoid'))
+    return render(request, 'cluster/run_detail.html', {
+        'run': run, 'clusters': clusters,
     })
 
 
@@ -209,5 +254,14 @@ def admin_settings(request):
         s.melody_agg = 'max'
     s.cluster_threshold = _f('cluster_threshold', s.cluster_threshold, 0.01, 1.0)
     s.save()
-    messages.success(request, '聚类参数已保存（下次"执行聚类"生效）')
+    # 每次保存都留一条参数记录（ClusterSetting 是会被覆盖的单例，
+    # 历史页要能回答"当时的参数是什么、谁改的"）
+    ClusterSettingLog.objects.create(
+        created_by=request.user,
+        w_mode=s.w_mode, w_harmony=s.w_harmony, w_melody=s.w_melody,
+        top_n=s.top_n, rrf_k=s.rrf_k, phrase_top_m=s.phrase_top_m,
+        melody_agg=s.melody_agg,
+        cluster_threshold=s.cluster_threshold,
+        feature_version=s.feature_version)
+    messages.success(request, '聚类参数已保存（下次"执行聚类"生效，本次设置已留档）')
     return redirect('cluster:cluster_admin')

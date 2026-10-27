@@ -1,0 +1,95 @@
+{% extends 'base.html' %}
+{% block title %}聚类历史记录 · 音乐聚类{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>聚类历史记录</h1>
+  <a class="btn btn-sm" href="/cluster/">← 返回聚类总览</a>
+</div>
+
+<p class="muted small">
+  这里是<b>历次已发布</b>的三轴（调式 / 和声 / 旋律）聚类结果存档，
+  所有用户可见。每条记录都保留当次运行使用的完整参数快照；
+  页面下方还有<b>参数设置记录</b>——管理员每次调整参数都会留档。
+</p>
+
+<h2>历次聚类结果</h2>
+{% if runs %}
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>#</th><th>时间</th><th>状态</th><th>作品数</th><th>类数</th>
+        <th>执行人</th><th>当次参数摘要</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td>{{ run.pk }}</td>
+        <td>{{ run.created_at|date:'Y-m-d H:i' }}</td>
+        <td>
+          {% if run.published %}
+            <span class="tag tag-public">已发布</span>
+          {% else %}
+            <span class="tag">未发布（仅管理员可见）</span>
+          {% endif %}
+        </td>
+        <td>{{ run.piece_count }}</td>
+        <td>{{ run.cluster_num|default:run.cluster_count }}</td>
+        <td class="muted">{{ run.created_by.username|default:'—' }}</td>
+        <td class="small">
+          权重 调式 {{ run.params.w_mode|default:'—' }} /
+          和声 {{ run.params.w_harmony|default:'—' }} /
+          旋律 {{ run.params.w_melody|default:'—' }}；
+          Top-N {{ run.params.top_n|default:'—' }}；
+          RRF k = {{ run.params.rrf_k|default:'—' }}；
+          乐句粗排 {{ run.params.phrase_top_m|default:'—' }}；
+          聚合 {{ run.melody_agg_display }}；
+          阈值 {{ run.params.cluster_threshold|default:'—' }}
+        </td>
+        <td><a class="btn btn-sm" href="/cluster/run/{{ run.pk }}/">查看详情 →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+  <div class="empty-state">
+    <p>还没有已发布的聚类结果。</p>
+    <p class="muted">管理员在「聚类管理台」执行聚类并发布后，这里会出现历史记录。</p>
+  </div>
+{% endif %}
+
+<h2>参数设置记录</h2>
+<p class="muted small">
+  管理员每次保存聚类参数都会在这里留档（管理员改的是"当前生效"的单例参数，
+  历史不会被覆盖）。每次聚类运行时用哪套参数，以该次记录的参数快照为准。
+</p>
+{% if setting_logs %}
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr><th>#</th><th>保存时间</th><th>操作人</th><th>参数明细</th></tr>
+    </thead>
+    <tbody>
+      {% for log in setting_logs %}
+      <tr>
+        <td>{{ log.pk }}</td>
+        <td>{{ log.created_at|date:'Y-m-d H:i' }}</td>
+        <td class="muted">{{ log.created_by.username|default:'—' }}</td>
+        <td class="small">
+          权重 调式 {{ log.w_mode }} / 和声 {{ log.w_harmony }} / 旋律 {{ log.w_melody }}；
+          Top-N {{ log.top_n }}；RRF k = {{ log.rrf_k }}；
+          乐句粗排 {{ log.phrase_top_m }}；
+          聚合 {{ log.melody_agg_display }}；
+          阈值 {{ log.cluster_threshold }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+  <div class="empty-state"><p>还没有参数设置记录。</p></div>
+{% endif %}
+{% endblock %}

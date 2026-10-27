@@ -3,6 +3,7 @@
 {% block content %}
 <div class="page-head">
   <h1>音乐聚类总览</h1>
+  <a href="/cluster/history/" class="btn">聚类历史记录</a>
   {% if user.is_staff %}
     <a href="/cluster/admin/" class="btn btn-primary">聚类管理台</a>
   {% endif %}
@@ -18,11 +19,17 @@
 {% if run %}
   <p class="muted small">
     第 {{ run.pk }} 次聚类 · {{ run.created_at|date:'Y-m-d H:i' }} ·
-    {{ run.piece_count }} 首作品分成 {{ run.cluster_count }} 类
+    {{ run.piece_count }} 首作品分成 {{ run.cluster_count }} 类 ·
+    <a href="/cluster/run/{{ run.pk }}/">查看当次完整参数与历史 →</a>
     {% if not run.published %}
       <span class="tag tag-public">未发布（仅管理员可见）</span>
     {% endif %}
   </p>
+
+  <h2>本次聚类使用的参数</h2>
+  {% with prows=run.param_rows %}
+    {% include 'cluster/_params_table.html' %}
+  {% endwith %}
 
   <div class="table-wrap">
     <table class="table">

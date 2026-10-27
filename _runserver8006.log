@@ -1,7 +1,0 @@
-[21/Oct/2026 12:02:52] "GET /accounts/login/ HTTP/1.1" 200 2004
-[21/Oct/2026 12:09:47] "HEAD /pieces/3/ HTTP/1.1" 302 0
-[21/Oct/2026 12:09:48] "GET /pieces/3/ HTTP/1.1" 302 0
-[21/Oct/2026 12:09:48] "GET /accounts/login/?next=/pieces/3/ HTTP/1.1" 200 2004
-[21/Oct/2026 12:09:48] "GET /static/css/style.css HTTP/1.1" 304 0
-[21/Oct/2026 14:13:12] "GET / HTTP/1.1" 302 0
-[21/Oct/2026 14:58:19] "GET / HTTP/1.1" 302 0

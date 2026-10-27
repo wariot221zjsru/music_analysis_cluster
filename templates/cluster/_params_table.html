@@ -1,0 +1,17 @@
+{# 参数快照面板：传入 prows = [(名称, 展示值)]，可选 note 说明文字 #}
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr><th>聚类参数</th><th>取值</th></tr>
+    </thead>
+    <tbody>
+      {% for label, value in prows %}
+      <tr>
+        <td>{{ label }}</td>
+        <td><b>{{ value }}</b></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if note %}<p class="muted small">{{ note }}</p>{% endif %}

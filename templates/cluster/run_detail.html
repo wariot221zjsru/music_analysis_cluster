@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+{% block title %}第 {{ run.pk }} 次聚类 · 音乐聚类{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>第 {{ run.pk }} 次聚类结果</h1>
+  <a class="btn btn-sm" href="/cluster/history/">← 返回历史记录</a>
+</div>
+
+<p class="muted small">
+  {{ run.created_at|date:'Y-m-d H:i' }} 执行{% if run.created_by %}
+  · 执行人 {{ run.created_by.username }}{% endif %}
+  · {{ run.piece_count }} 首作品分成 {{ run.cluster_count }} 类
+  {% if not run.published %}
+    <span class="tag">未发布（仅管理员可见）</span>
+  {% else %}
+    <span class="tag tag-public">已发布</span>
+  {% endif %}
+</p>
+
+<h2>当次聚类使用的参数</h2>
+<p class="muted small">
+  这是该次运行时的<b>参数快照</b>（保存在这次运行记录里，之后改参数不影响这里）。
+</p>
+{% with prows=run.param_rows %}
+  {% include 'cluster/_params_table.html' %}
+{% endwith %}
+
+<h2>聚类结果</h2>
+{% if clusters %}
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>类</th><th>成员数</th><th>代表作品</th><th>成员</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for cl in clusters %}
+      <tr>
+        <td><b>{{ cl.display_label }}</b></td>
+        <td>{{ cl.size }}</td>
+        <td>
+          {% if cl.medoid %}
+            <a href="/pieces/{{ cl.medoid.id }}/">{{ cl.medoid.title }}</a>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% for m in cl.members.all|slice:':5' %}
+            {% if m.piece %}
+              <a href="/pieces/{{ m.piece.id }}/">{{ m.piece.title }}</a>{% if not forloop.last %}、{% endif %}
+            {% endif %}
+          {% endfor %}
+          {% if cl.size > 5 %}<span class="muted">等 {{ cl.size }} 首</span>{% endif %}
+        </td>
+        <td><a class="btn btn-sm" href="/cluster/c/{{ cl.id }}/">查看 →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+  <div class="empty-state"><p>这次运行没有聚类出任何类。</p></div>
+{% endif %}
+{% endblock %}

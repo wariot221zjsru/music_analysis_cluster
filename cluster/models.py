@@ -74,6 +74,83 @@ class ClusterSetting(models.Model):
         return obj
 
 
+# ---------------------------------------------------------------- 参数展示
+
+#: 参数的展示顺序与中文名（历史页 / 运行详情页共用）
+PARAM_LABELS = [
+    ('w_mode', '调式轴权重'),
+    ('w_harmony', '和声轴权重'),
+    ('w_melody', '旋律轴权重'),
+    ('top_n', '各轴 Top-N'),
+    ('rrf_k', 'RRF 常数 k'),
+    ('phrase_top_m', '旋律乐句粗排（每乐句取几条）'),
+    ('melody_agg', '旋律曲级聚合方式'),
+    ('cluster_threshold', '聚类切分阈值'),
+]
+
+#: melody_agg 的中文含义
+AGG_DISPLAY = {
+    'max': '最相似乐句对（max）',
+    'mean_max': '各乐句最佳匹配均值（更稳）',
+}
+
+
+def param_rows(params: dict) -> list:
+    """把参数快照 dict 转成页面友好的 [(名称, 展示值)] 列表。"""
+    params = params or {}
+    rows = []
+    for key, label in PARAM_LABELS:
+        v = params.get(key)
+        if key == 'melody_agg':
+            v = AGG_DISPLAY.get(v, v or '—')
+        if v is None:
+            v = '—'
+        rows.append((label, v))
+    return rows
+
+
+class ClusterSettingLog(models.Model):
+    """一次聚类参数保存的记录（审计）。
+
+    ClusterSetting 是会被覆盖的单例；本表把**每次**保存的完整参数留档，
+    谁在什么时候把参数调成了什么，事后可查（历史页对所有用户可见）。
+    """
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+        related_name='cluster_setting_logs', verbose_name='操作人')
+    created_at = models.DateTimeField('保存时间', auto_now_add=True)
+    w_mode = models.FloatField('调式轴权重')
+    w_harmony = models.FloatField('和声轴权重')
+    w_melody = models.FloatField('旋律轴权重')
+    top_n = models.PositiveIntegerField('各轴 Top-N')
+    rrf_k = models.PositiveIntegerField('RRF 平滑常数 k')
+    phrase_top_m = models.PositiveIntegerField('旋律乐句粗排：每个乐句取几条')
+    melody_agg = models.CharField('旋律曲级聚合', max_length=8)
+    cluster_threshold = models.FloatField('聚类切分距离阈值')
+    feature_version = models.PositiveIntegerField('特征版本', default=1)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = '聚类参数记录'
+        verbose_name_plural = '聚类参数记录'
+
+    def __str__(self):
+        return f'参数记录 #{self.pk} · {self.created_at:%Y-%m-%d %H:%M}'
+
+    @property
+    def params_dict(self) -> dict:
+        return {k: getattr(self, k) for k, _ in PARAM_LABELS}
+
+    @property
+    def param_rows(self) -> list:
+        return param_rows(self.params_dict)
+
+    @property
+    def melody_agg_display(self) -> str:
+        return AGG_DISPLAY.get(self.melody_agg, self.melody_agg)
+
+
 class PieceVector(models.Model):
     """一首作品的三轴特征（聚类 / 检索的最小单元）。"""
 
@@ -176,6 +253,16 @@ class ClusterRun(models.Model):
 
     def __str__(self):
         return f'聚类第 {self.pk} 次 · {self.get_status_display()}'
+
+    @property
+    def param_rows(self) -> list:
+        """参数快照 → [(名称, 展示值)]，历史页 / 详情页直接渲染。"""
+        return param_rows(self.params)
+
+    @property
+    def melody_agg_display(self) -> str:
+        agg = (self.params or {}).get('melody_agg')
+        return AGG_DISPLAY.get(agg, agg or '—')
 
 
 class Cluster(models.Model):

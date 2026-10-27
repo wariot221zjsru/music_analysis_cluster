@@ -10,6 +10,8 @@ app_name = 'cluster'
 
 urlpatterns = [
     path('', views.overview, name='cluster_overview'),
+    path('history/', views.history, name='cluster_history'),
+    path('run/<int:run_id>/', views.run_detail, name='run_detail'),
     path('admin/', views.admin_panel, name='cluster_admin'),
     path('admin/rebuild/', views.admin_rebuild, name='cluster_rebuild'),
     path('admin/run/', views.admin_run, name='cluster_run'),

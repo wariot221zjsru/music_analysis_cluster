@@ -7,7 +7,8 @@
 </div>
 
 <p class="muted small">
-  第 {{ cluster.run.pk }} 次聚类 · 第 {{ cluster.index }} 类 ·
+  <a href="/cluster/run/{{ cluster.run.pk }}/">第 {{ cluster.run.pk }} 次聚类</a>
+  · 第 {{ cluster.index }} 类 ·
   共 {{ cluster.size }} 首
   {% if cluster.auto_label %}
     <br>自动标签：{{ cluster.auto_label }}
@@ -52,6 +53,14 @@
     </tbody>
   </table>
 </div>
+
+<h2>本次聚类使用的参数</h2>
+<p class="muted small">
+  来自第 {{ cluster.run.pk }} 次运行的参数快照。
+</p>
+{% with prows=cluster.run.param_rows %}
+  {% include 'cluster/_params_table.html' %}
+{% endwith %}
 
 <p class="muted small">
   三轴相似度是与<b>本类代表作品</b>直接比对的结果（0–1，越大越像）；
