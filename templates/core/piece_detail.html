@@ -85,6 +85,11 @@
       <a class="btn btn-outline" href="{% url 'core:qa_page' piece.id %}">
         💬 对本作品提问
       </a>
+      {% if piece.musicxml_file %}
+      <a class="btn btn-outline" href="{% url 'core:transpose_page' piece.id %}">
+        🎚 转调（大调 ↔ 小调）
+      </a>
+      {% endif %}
     </div>
     <div class="more-status">
       <span class="more-chip">结构 <span class="pill" data-sts="structure">未运行</span></span>

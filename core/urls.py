@@ -36,5 +36,8 @@ urlpatterns = [
          name='qa_status'),
     path('pieces/<int:piece_id>/visibility/', views.toggle_visibility,
          name='toggle_visibility'),
+    # —— 转调（大调 ⇄ 自然小调 / 和声小调，产物另存为新作品）——
+    path('pieces/<int:piece_id>/transpose/', views.transpose_page,
+         name='transpose_page'),
     path('settings/', views.system_settings, name='settings'),
 ]

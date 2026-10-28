@@ -1,0 +1,78 @@
+{% extends 'base.html' %}
+{% block title %}转调 · {{ piece.title }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>转调</h1>
+  <a class="btn btn-sm" href="{% url 'core:piece_detail' piece.id %}">← 返回分析页</a>
+</div>
+
+<p class="muted">
+  原作品：{{ piece.title }}
+  {% if piece.is_public %}<span class="tag tag-public">公开</span>{% else %}<span class="tag">私有</span>{% endif %}
+</p>
+
+{% if err %}
+  <div class="empty-state">
+    <p>{{ err }}</p>
+  </div>
+{% else %}
+<div class="card">
+  <h2>原调（系统自动判断）</h2>
+  <p>
+    <b class="tag tag-public">{{ src_name }}</b>
+    <span class="muted small">判断依据：{{ src.basis }}</span>
+  </p>
+  <p class="muted small">
+    原调不用手填：系统先用「调性布局分析」给出的主调，没跑过这一步就用本地
+    KS / music21 调性判定兜底。若判断与实际不符，可回分析页重跑调性布局分析。
+  </p>
+
+  <h2>目标调（下拉框选择）</h2>
+  <form method="post" action="{% url 'core:transpose_page' piece.id %}">
+    {% csrf_token %}
+    <p>
+      <select name="target" size="1">
+        {% for group_label, options in groups %}
+        <optgroup label="{{ group_label }}">
+          {% for value, label in options %}
+          <option value="{{ value }}" {% if value == default %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+    </p>
+    <button type="submit" class="btn btn-primary">开始转调 →</button>
+  </form>
+
+  <h2>怎么转的</h2>
+  <ol class="muted small">
+    <li>
+      <b>移调</b>：按「原调主音 → 目标调主音」最近的距离整体移调（拼写、
+      和弦、谱号都由记谱引擎处理）。移完之后谱子落在目标主音的<b>原调式</b>上。
+    </li>
+    <li>
+      <b>调式改写</b>：把落在原调式音级上的音改写到目标调式的同音级——
+      {% if src.mode == 'major' %}
+        大调 → 自然小调：降 3 / 6 / 7 级；大调 → 和声小调：降 3 / 6 级
+        （保留大调的导音，才有和声小调那个增二度）。
+      {% else %}
+        小调 → 大调：升 3 / 6 / 7 级（和声小调里已经升过的 7 级原样保留，
+        到新调里就是大调的导音）。
+      {% endif %}
+    </li>
+    <li>
+      <b>调外变化音不动</b>：#4、b7 这类调外音保持"变化音"身份，
+      不会被当成某个音级误改——转调只换调式色彩，不改旋律性格。
+    </li>
+    <li>
+      调号换成目标调（和声小调用自然小调的调号，升 7 由临时记号给出）。
+    </li>
+  </ol>
+
+  <p class="muted small">
+    转调产物<b>另存为一首新作品</b>（默认私有，可在新作品页设为公开），
+    原作品一分不动；新作品可以照常跑全部分析、也参与聚类。
+  </p>
+</div>
+{% endif %}
+{% endblock %}

@@ -16,11 +16,13 @@ from django.views.decorators.http import require_POST
 from .analysis import melody as melody_mod
 from .analysis import melody_export as mex
 from .analysis import melody_line as melody_line_mod
+from .analysis import transpose as transpose_mod
 from .analysis.pipeline import (
     GROUPS, STEP_DEPS, STEP_LABELS, start_convert_async, start_question_async,
     start_step_async, start_steps_async,
 )
 from .analysis.scoredata import parse_score
+from . import storage
 from .forms import UploadForm
 from .models import AnalysisResult, AnalysisRun, Piece, QAQuestion, SystemConfig
 
@@ -138,6 +140,112 @@ def piece_detail(request, piece_id: int):
         'export_defaults_json': json.dumps(mex.resolve_options(cfg),
                                            ensure_ascii=False),
     })
+
+
+# ---------------------------------------------------------------- 转调
+
+def _detect_source_key(piece) -> dict | None:
+    """转调的「原调」：调性布局分析优先，其次 music21 本地判定兜底。"""
+    row = piece.results.filter(step=AnalysisResult.Step.TONALITY).first()
+    if row and row.status == AnalysisResult.Status.DONE:
+        parsed = transpose_mod.detect_key_from_tonality(row.output)
+        if parsed:
+            return {'tonic': parsed[0], 'mode': parsed[1],
+                    'basis': '调性布局分析（main_key）'}
+    if piece.musicxml_file:
+        parsed = transpose_mod.detect_key_from_score(piece.musicxml_file.path)
+        if parsed:
+            return {'tonic': parsed[0], 'mode': parsed[1],
+                    'basis': 'music21 本地调性判定（调性分析还没跑时的兜底）'}
+    return None
+
+
+def _run_transpose(user, piece, src: dict, tgt: tuple) -> tuple:
+    """转调并另存为新作品（原作品不动）。返回 ``(新作品, 摘要)``。"""
+    tgt_pc, tgt_mode = tgt
+    src_name = transpose_mod.key_name(src['tonic'], src['mode'])
+    tgt_name = transpose_mod.key_name(tgt_pc, tgt_mode)
+    workdir = storage.new_workdir(prefix=f'transpose_p{piece.id}_')
+    try:
+        xml_path = workdir / f'p{piece.id}_{tgt_pc}_{tgt_mode}.musicxml'
+        mid_path = workdir / f'p{piece.id}_{tgt_pc}_{tgt_mode}.mid'
+        info = transpose_mod.convert_file(
+            piece.musicxml_file.path, str(xml_path), str(mid_path),
+            src['tonic'], src['mode'], tgt_pc, tgt_mode)
+
+        base = _safe_filename(piece.title, f'piece{piece.id}')
+        title = f'{piece.title[:150]}（{src_name} → {tgt_name}）'[:200]
+        new_piece = Piece.objects.create(
+            owner=user, title=title,
+            source_type=Piece.SourceType.MUSICXML,
+            contains_voice=piece.contains_voice,
+            is_public=False)
+        new_piece.musicxml_file = storage.store_musicxml(
+            new_piece.id, xml_path, f'{base}_{tgt_pc}_{tgt_mode}.musicxml')
+        if info.get('midi'):
+            new_piece.midi_file = storage.store_midi(
+                new_piece.id, mid_path, f'{base}_{tgt_pc}_{tgt_mode}.mid')
+        new_piece.save(update_fields=['musicxml_file', 'midi_file'])
+        return new_piece, info
+    finally:
+        storage.cleanup_workdir(workdir)
+
+
+@login_required
+def transpose_page(request, piece_id: int):
+    """转调页：原调系统自动判断，目标调由下拉框选，转完另存为新作品。
+
+    大调 → 12 个自然小调 / 12 个和声小调；小调 → 12 个大调。
+    产物是新作品（默认私有），原作品一分不动。
+    """
+    piece = get_object_or_404(Piece, pk=piece_id)
+    if not _can_view(request.user, piece):
+        raise Http404('作品不存在或未公开。')
+    if not piece.musicxml_file or not piece.musicxml_file.storage.exists(
+            piece.musicxml_file.name):
+        return render(request, 'core/transpose.html', {
+            'piece': piece,
+            'err': '这首作品还没有生成 MusicXML（转换未完成），转换成功后再来转调。',
+        })
+
+    src = _detect_source_key(piece)
+    if src is None:
+        return render(request, 'core/transpose.html', {
+            'piece': piece,
+            'err': '判断不出原调。请先跑「调性布局分析」（结果里要给出主调），'
+                   '或确认 MusicXML 里有足够的音高信息。'})
+
+    src_name = transpose_mod.key_name(src['tonic'], src['mode'])
+    groups, default = transpose_mod.target_options(src['tonic'], src['mode'])
+    ctx = {'piece': piece, 'src': src, 'src_name': src_name,
+           'groups': groups, 'default': default,
+           'can_edit': _can_edit(request.user, piece)}
+
+    if request.method != 'POST':
+        return render(request, 'core/transpose.html', ctx)
+
+    parsed = transpose_mod.parse_target(request.POST.get('target') or '')
+    if not parsed:
+        ctx['err'] = '请从下拉框里选一个目标调。'
+        return render(request, 'core/transpose.html', ctx)
+    tgt_pc, tgt_mode = parsed
+    if tgt_mode not in transpose_mod.TGT_MODES_BY_SRC[src['mode']]:
+        ctx['err'] = f'当前只支持从{src_name}转成' + '、'.join(
+            transpose_mod.MODE_NAMES[m]
+            for m in transpose_mod.TGT_MODES_BY_SRC[src['mode']]) + '。'
+        return render(request, 'core/transpose.html', ctx)
+
+    try:
+        new_piece, info = _run_transpose(request.user, piece, src, parsed)
+    except Exception as exc:                       # noqa: BLE001
+        ctx['err'] = f'转调失败：{exc}'
+        return render(request, 'core/transpose.html', ctx)
+
+    messages.success(
+        request, f'已生成转调后的新作品「{new_piece.title}」'
+                 f'（{info["src_key"]} → {info["tgt_key"]}，移调 '
+                 f'{info["shift"]:+d} 半音，改写了 {info["altered_notes"]} 个音）。')
+    return redirect('core:piece_detail', piece_id=new_piece.id)
 
 
 # 结构 / 织体 / 风格三个步骤（页面按此顺序竖排，各自单独点击运行）
